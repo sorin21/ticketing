@@ -1,0 +1,4147 @@
+01. Structure
+    Tables - Resources 
+      User 
+        email = string
+        password = string
+
+      Ticket 
+        title = string
+        price = number
+        userId = ref to User
+        orderId = ref to Order 
+      
+      Order 
+        userId = ref to User 
+        status = cancel or complete 
+        ticketId = ref to Ticket 
+        expiresAt = Data -> 15 minutes
+
+      Charge 
+        orderId = ref to Order 
+        status = created, failed, completed
+        amount = number 
+        stripeId = string 
+        stripeRefundId = string
+
+
+    Services to create
+      auth       = everything related to register/login/logout
+      tickets    = ticket create/edit/update
+      order      = order create/edit
+      expiration = watches for orders to be created and cancel them after 15 min
+      payments   = handles credit card payments. Cancel order if payments fail and finish if payment succeeds.
+
+    We have 4 resources and 5 services. With exeption of expiration, will create one service for each type of resource.
+
+  
+    Events 
+      UserCreated     UserUpdated
+      OrderCreated    OrderCanceled   OrderExpired
+      TicketCreated   TicketUpdated   
+      ChargeCreated
+
+    Will emit these events in different cases.
+
+
+02. Create a folder auth 
+      Route                 Method               Body                      Purpose
+      /api/users/signup       POST  { email: string, password: string } Sign up for an account
+      /api/users/signin       POST  { email: string, password: string } Sign in to an existing account
+      /api/users/signout      POST        {}                            Sign out
+      /api/users/currentuser  GET         -                              Return info about the user
+
+    1. Run inside commands: 
+        npm init -y 
+        npm i typescript ts-node-dev express @types/express
+
+      ts-node-dev = tool to use to execute our project in development environment.
+      @types/express = to not show an error for this express library, when using TS
+
+    Inside auth add src folder and inside index.ts file.
+
+    2. Generate a TS configuration file 
+      Inside auth folder run this command:
+        tsc --init
+
+    3. Create src folder
+      Put our app code in this folder.
+      Create inside index.js that is actually like server.js
+      We open this on port 3000 using in future Kubernetes
+
+        app.listen(3000, () => {
+          console.log("Listening on 3000!");
+        });
+
+    4. Add inside package.json the start command, to run this inside Kubernetes:
+        "start": "ts-node-dev src/index.ts"
+
+        Stundents
+        If the skaffold doesn't reaload the app do not directly use "nodemon ./src/index.ts"
+
+        insted of use "ts-node-dev --poll ./src/index.ts"
+
+        -- poll means the system auto check change after a certain of time.
+
+    5.Start the tickets project in auth folder:
+        npm start
+
+
+03. Setup Docker
+    Before starting Kubernetes we need to make sure that we can build an image out of our service in order to build an image.
+    First we need to make Docker file, so we can create images for auth service.
+
+    Create a DockerFile inside auth folder.
+
+    We don't want to load node_modules in our container. So we add .dockerignore to ignore node_modules folder
+
+    Build the auth Image 
+      docker build -t kiddodragon/auth .
+
+    Now we need to put this auth image into Kubernetes cluster. 
+    So to have this image running we need to create a deployment.
+
+02. Create k8s folder
+    Create config file, a Deployment, to load Image in the Kubernetes cluster. 
+    This Deployment will create a set of pods automatically and will make sure that those pods are running for auth service.
+
+    Inside root create infra/k8s folders and inside auth-depl.yaml.
+    Evertime when we create a deployment we need to create a kubernetes service as well(to give us access to the pod), in the 
+    same file.
+
+    Even we don't add type for the Service:
+      type: ClusterIP
+    
+    this will be added by default, because each time we cheate a Service, the default one is ClusterIP.
+
+    ClusterIP service is going to allow communication to the service from anything else running only inside of our cluster.
+   
+
+03. Add skaffold 
+    Add in the root the skaffold.yaml file. 
+
+    Open another terminal, Inside auth folder and run:
+      npm start
+
+    Then in the root run:
+      skaffold dev
+
+    Before running skaffold, first start the auth service.
+
+    Now we can make any change in auth/index.ts file and see the changes in skaffold terminal.
+
+
+    If you did not see your server restart after changing the index.ts file, do the following:
+
+      Open the package.json file in the ‘auth’ directory
+
+        Find the ‘start’ script
+
+      Update the start script to the following:
+
+        ts-node-dev --poll src/index.ts
+
+
+    When running skaffold dev in the upcoming lecture, you may encounter a warning or error about the v1beta1 API version 
+    that is being used.
+
+    The v1 Ingress API is now required as of Kubernetes v1.22 and the v1beta1 will no longer work.
+
+    Only a few very minor changes are needed:
+
+      https://kubernetes.io/docs/concepts/services-networking/ingress/
+
+    Notably, a pathType needs to be added:
+
+      pathType: Prefix
+    
+    and how we specify the backend service name and port has changed:
+
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: ingress-service
+        annotations:
+          kubernetes.io/ingress.class: nginx
+          nginx.ingress.kubernetes.io/use-regex: "true"
+      spec:
+        rules:
+          - host: ticketing.dev
+            http:
+              paths:
+                - path: /api/users/?(.*)
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: auth-srv
+                      port:
+                        number: 3000
+
+    We will include a separate v1 Ingress manifest attached to each appropriate lecture throughout the course so that students 
+    can refer to the changes.
+
+    Errors on Skaffold 
+      Here's the first thing to try:
+
+        1) Stop skaffold
+
+        2) Delete ingress-nginx with a kubectl delete namespace ingress-nginx
+
+        3) Redeploy ingress-nginx with the appropriate script from https://kubernetes.github.io/ingress-nginx/deploy/
+          Run the command
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/cloud/deploy.yaml
+            
+        4) Restart skaffold
+
+      If still with errors then:
+        kubectl get all
+
+      identified another service running on port 3000
+
+        kubectl delete service/NAMEOFSERVICE
+  
+04. Add Ingress
+    To have access inside our cluster we have 2 options: we set up a NodePort service or to add Ingress.
+
+    Ingress or Ingress Controller is a Pod with a set of routing rules to distribute traffic to other services, inside our 
+    Cluster. Will work along with this Load Balancer Service.
+
+    How our app will work. Will have a request comming to the Load Balancer. This Load Balancer will send that request to 
+    this Ingress Controller. And this Ingress Controller will have a set of routing rules. Will look to the incoming path 
+    and send request so the our Cluster, then to the specific Pod(auth)
+
+    First we create a configuration file for Load Balancer Service.
+
+    Create ingress-srv.yaml file inside k8s folder.
+    
+    Anytime a request is comming to our cluster will be handle by the Ingress Service and will be routed to the appropriate 
+    service inside to our cluster.
+    
+05. Setting ticketing.dev
+    From the last project we didn't delete anything from Ingress Nginx, beside the config rules. 
+    So we don't have to reinstall Ingress Nginx.
+    
+    Modify the Host file
+      Open as administrator the host file 
+        C:\Windows\System32\drivers\etc
+
+      and add this rule:
+        127.0.0.1 ticketing.dev
+        
+    Open the browser and run ticketing.dev
+      We will get an error 
+        Your connection is not private
+
+      That is because of default behavior of Ingress Nginx. By default Ingress Nginx is web server that tries to use a https 
+      connection. Unfortunately be default uses Self Signed Certificate. 
+
+      Chrome doesn't trust servers that use Self Signed Certificate. This error is only on development mode.
+
+      To fix this issue we click anywere in the page and type: thisisunsafe.
+
+      Now we can se Hi There! on the browser, that means we can reach the auth server directly.
+
+      If we get the error:
+        Can not get api/users/currentuser 
+
+      we have to restart skaffold.
+
+      Skaffold on AWS 
+        https://github.com/stelligent/skaffold_on_aws
+
+
+06. Create routes folder 
+      Inside auth folder add login, register, logout, current-user files.
+
+      Import all these files inside index.ts file.
+
+
+    Install express-validator 
+      Inside auth folder:
+        npm i express-validator
+
+
+    Scaffolding Routes
+      Because we made a change inside the project to package.json, skaffold will automatically rebuild our image and then 
+      update the associated deployment.
+    
+    Register Route
+      Use the express-validator inside regiter.ts to show an object with all errors.
+      We can test this route on Postman, with a POST method:
+
+        ticketing.com/api/users/sigup
+
+      add to Body, raw and these data:
+        {
+          "email": "tesdsadassa",
+          "password": "1"
+        }
+
+      Answer:
+        [
+          {
+              "value": "tesdsadassa",
+              "msg": "Email must be valid",
+              "param": "email",
+              "location": "body"
+          },
+          {
+              "value": "1",
+              "msg": "Password must be between 4 and 20 characters",
+              "param": "password",
+              "location": "body"
+          }
+        ]
+    
+07. Errors Handling for Auth
+    Will have 3 scenarios for errors:
+      1. Validate if the email is correct
+      2. Validate if the email is already use
+      3. If the 2 above validations will pass check if the database connection is not down
+
+    To make sure that we always capture all errors and process them and structure them in some identical, consistent fashion, 
+    we're going to write an error handling middleware.
+
+
+07.1. Create errors middleware - errors solution
+
+  Add middleware folder and inside add error-handler.ts file.
+
+  Write an error middleware, wired it to express(into server.js), to process errors, give them a consistent Structure 
+  and send them back to the browser.
+
+  In Express the error middleware should have 4 arguments:
+    app.use(function(err, req, res, next)=> {
+      console.error(err.stack);
+      res.status(500).send("something went wrong!")
+    })
+
+  Will take built in Error object and subclasses into 2 separated subclasses:
+    - RequestValidationError
+    - DatabaseConnectionError
+
+  
+  Inside auth/src create errors folder. Inside of this folder will put subclasses:
+    - RequestValidationError
+
+        // ValidationError is a type that describe the type that comes back when
+        // we do a validation type using express validator
+        // we use it to receive a list of errors
+        import { ValidationError } from "express-validator";
+
+        // We build custom implementation of an Error
+        export class RequestValidationError extends Error {
+          // call constructor with the list of errors
+          constructor(public errors: ValidationError[]) {
+            // call super to invoke the constructor in base class, in this case Error
+            super();
+            // We use this only because we extends a built in class, Error,
+            // to have our class to work correctly
+            Object.setPrototypeOf(this, RequestValidationError.prototype);
+          }
+        }
+
+    - DatabaseConnectionError
+
+        export class DatabaseConnectionError extends Error {
+          // we hardcode the reason why we throw this error
+          reason = "Error connecting to database!";
+          constructor() {
+            super();
+            // We use this only because we extends a built in class, Error
+            Object.setPrototypeOf(this, DatabaseConnectionError.prototype);
+          }
+        }
+
+  RequestValidationError will throw any error for all data from incoming request.
+  We create separated subclasses, because we want to add custom properties to each one.
+
+  Inport inside register.ts route these 2 files:
+    import {RequestValidationError} from '../errors/request-validation-error';
+    import {DatabaseConnectionError} from '../errors/database-connection-error';
+
+    router.post(
+      "/api/users/register",
+      [
+        body("email").isEmail().withMessage("Email must be valid"),
+        body("password")
+          .trim()
+          .isLength({ min: 4, max: 20 })
+          .withMessage("Password must be between 4 and 20 characters"),
+      ],
+      // adding [] for express validator, TS will not know anymore who are req and res
+      // so we import Request and Response and use the type here
+      (req: Request, res: Response) => {
+        // put in errors object all errors found making this /register request
+        const errors = validationResult(req);
+
+        // if the errors obj is not empty
+        if (!errors.isEmpty()) {
+          // turn the errors obj into an array and send this errors array
+          throw new RequestValidationError(errors.array());
+        }
+        console.log("Creating a user...");
+        throw new DatabaseConnectionError();
+
+        res.send({});
+      }
+    );
+
+
+07.2 Determining Error Type
+
+  We import these also inside error-handler.ts file:
+
+    import { RequestValidationError } from "../errors/request-validation-error";
+    import { DatabaseConnectionError } from "../errors/database-connection-error";
+
+    export const errorHandler = (
+      err: Error,
+      req: Request,
+      res: Response,
+      next: NextFunction
+    ) => {
+      // instead of throwing a generic string error, or a objects array, like in express-validator
+      // will throw an instance of CustomError, format that will be identical to all services
+      if (err instanceof RequestValidationError) {
+        console.log("request validation error", err); // enable this console log to see right error
+        // return res.status(err.statusCode).send({ errors: err.serializeErrors() });
+      }
+      if (err instanceof DatabaseConnectionError) {
+        console.log("database connection error", err); // enable this console log to see right error
+      }
+    };
+
+
+  We can test is inside Postman, POST request, with an invalid email.
+    ticketing.dev/api/users/register
+  
+    params: {email: invalid, password: valid }
+
+  We get back in Postman Status 400, bad request and inside terminal we get back the console: request validation error.
+
+  Now if we change the params inside Postman, POST request:
+
+    params: {email: valid, password: valid }
+
+  We get back in terminal the console: database connection error.
+
+
+
+07.3  Property 'param' does not exist on type 'AlternativeValidationError'
+
+  Property 'param' does not exist on type 'AlternativeValidationError'
+  In the upcoming lecture, we will be formatting our validation errors in error-handler.ts.
+
+  The express-validator library recently released a breaking v7 version where the ValidationError type is now a 
+  discriminated union:
+
+  https://express-validator.github.io/docs/migration-v6-to-v7#telling-error-types-apart
+
+  As well as renaming param to path
+
+  https://express-validator.github.io/docs/migration-v6-to-v7#renamed-properties
+
+  So, we'll need to update our conditional to add a check for an error of type field and use the new path property:
+
+    if (err instanceof RequestValidationError) {
+      const formattedErrors = err.errors.map((error) => {
+        if (error.type === 'field') {
+          return { message: error.msg, field: error.path };
+        }
+      });
+      return res.status(400).send({ errors: formattedErrors });
+    }
+
+
+07.4 Common Response Structure
+
+  All responses that we send from any server should have this structure:
+    {
+      errors: {
+        message: string,
+        field?: string
+      }[]
+    }
+
+  Field in this case will be like email, password, etc.
+
+  To have that structure inside error-handler.js file, DatabaseConnectionError, we add formattedErrors:
+
+      if (err instanceof RequestValidationError) {
+        const formattedErrors = err.errors.map((error) => {
+          return {
+            message: error.msg,
+            field: error.param,
+          };
+        });
+      }
+      return res.status(400).send({ errors: formattedErrors });
+
+  These errors we have above from:
+
+    errors: ValidationError[]
+
+  that is inside request-validation-error.js file, inside constructor.
+
+  We can test is inside Postman, POST request, with an invalid email.
+    ticketing.dev/api/users/register
+  
+    params: {email: invalid, password: valid }
+
+  Now in Postman we get an object with an errors array, with each object being an different error.
+    {
+      "errors": [
+        {
+          "message": "Email must be valid",
+          "field": "email"
+        }
+      ]
+    }
+
+  For DatabaseConnectionError inside error-handler.js file will return the same like RequestValidationError:
+    if (err instanceof DatabaseConnectionError) {
+      return res.status(500).send({
+        errors: [{ message: err.reason }],
+      });
+    }
+
+
+07.5 Moving Logic Into Errors
+
+  In the DatabaseConnectionError we will not have field property.
+
+  We can test is inside Postman, POST request, with an valid email.
+    ticketing.dev/api/users/register
+  
+    params: {email: valid, password: valid }
+
+  Now in Postman we get an object with an errors array, with each object being an different error.
+    {
+      "errors": [
+        {
+          "message": "Error connecting to database!",
+        }
+      ]
+    }
+
+  We want to send back to React same kind of errors from all backend microservices. We use a function that does this, 
+  called serializeErrors().
+
+  The goal of this serializeErrors() function is to return an array of objects that follow this kind of common structure:
+
+    { errors: [{ msg: err.message }] }
+
+  We're also going to make sure that all these different errors list a statusCode to send down as well.
+
+  So will have this structure with errors propertie in an obj, that has an array with each error in an object.
+  In this directions we want to be sure that this errros pattern is respectected, so we can do this in 2 ways.
+
+  And the errorHandler middleware is not going to grow in much complexity because no matter what the error is, we're always 
+  going to refer to the same kind of serializeErrors() function and the same statusCode property.
+
+    statusCode
+    serializeErrors()
+
+
+
+07.6. serializeErrors' not assignable to the same property in base type 'CustomError'
+
+  When adding the serializeErrrors function in the next lecture you will see the following error:
+
+  [auth] src/errors/request-validation-error.ts(14,3): error TS2416: Property 'serializeErrors' in type 'RequestValidationError' 
+  is not assignable to the same property in base type 'CustomError'.
+
+  This is caused by the modifications we previously made in regard to express-validator v7.
+
+  The function will need a small change to return an object with only the message:
+
+    serializeErrors() {
+      return this.errors.map((err) => {
+        if (err.type === 'field') {
+          return { message: err.msg, field: err.path };
+        }
+        return { message: err.msg };
+      });
+    }
+
+07.7. Verifying Our Custom Errors
+
+  Two possible ways 
+
+  1. Declaring an inteface inside top of RequestValidationError
+    interface CustomError {
+      statusCode: number;
+      serializeErrors(): {
+        msg: string;
+        field?: string;
+      }[]
+    }
+
+    To make sure that RequestValidationError class satisfies this interface we can use it like this:
+      export class RequestValidationError extends Error implements CustomError {}.
+    
+    By doind this will check if out statusCode, declared inside class, is a number, and we have a function serializeErrors, 
+    that returns an array of objects.
+    
+
+  2. Declaring an abstract class CustomError, that will have the same purpose that the interface, from above has it.
+    The abstract its like a normal class, but can't be instatiated, meaning we can't use new CustomError.
+    The abstract class is good to organize our code and setup requirements for subclasses, of this class. 
+    The benefit is that translated in JS abstract class exists, but the interface exists only in TS. That means we can use 
+    abstract class with an instaceof ckeck.
+
+    Using abstract class we make sure that RequestValidationError and DatabaseConnectionError will extend CustomError, 
+    abstract class, instead of built in Error class.
+
+
+
+
+07.8. Implement CustomError abstract class
+
+  We create an abstract class, inside custom-error.ts file:
+    
+    export abstract class CustomError extends Error {}
+
+  and we use it inside of the middleware, error-handler.ts file:
+
+    export const errorHandler = (err, req, res, next) => {
+      if (err instanceof CustomError) {
+        return res.status(err.statusCode).send({ errors: err.serializeErrors() });
+      }
+      res.status(400).send({ errors: [{ message: "Something went wrong in error-handler middleware!" }] });
+    };
+
+  We also use it inside request-validation-error.ts and database-validation-error.ts files:
+
+    class DatabaseConnectionError extends CustomError {}
+    class RequestValidationError extends CustomError {}
+
+
+07.9. Create NotFoundError
+  So this will be an error that we want to be able to throw at some point in time, any time the user tries to navigate to 
+  some route that doesn't exist.
+  
+  Extend error middleware
+  We can now use CustomError in NotFoundError. Will add NotFoundError inside server.js
+    app.get("*", () => {
+      throw new NotFoundError();
+    });
+    
+
+  This will catch all errors and send to out middleware errorHandler(). This middleware will take the status code, will call 
+  the serializeErrors() and will generate a response and automatically to who wanted to access this specific route.
+
+  This will work with only get request, but to work with all request we must use app.all().
+
+  We can test is inside Postman, GET request, with an valid email, but with a routeNotExist:
+    ticketing.dev/api/users/register/routeNotExist
+  
+    params: {email: valid, password: valid }
+
+  Now in Postman we get an object with an errors array, with each object being an different error.
+
+    {
+      "errors": [
+        {
+          "message": "Page Not Found!",
+        }
+      ]
+    }
+
+  The NotFoundError work now with a GET request:
+    
+    app.get("*", () => {
+      throw new NotFoundError();
+    })
+
+  We can make it work with any other arbitrary method if we just change app.get with app.all apt. So app.all is going to 
+  watch for requests with any kind of method and without any kind of route.
+
+    app.all("*", () => {
+      throw new NotFoundError();
+    })
+
+  So now we should be able to save that, make a post request to this silly route and we'll see the same thing.
+
+07.10. Async errors
+
+    Will add async so this function will not return immediately something, but instead will return a Promise, that will 
+    resolve a value, at some point in future. 
+
+      https://expressjs.com/en/guide/error-handling.html
+
+      app.all("*", async () => {
+        throw new NotFoundError();
+      });
+            
+    So to work this correctly we have to receive req, res, next.
+
+      app.all("*", async (req, res, next) => {
+        // we don't throw anymore, because we use async
+        // throw new NotFoundError();
+        next(new NotFoundError());
+      });
+
+
+07.11 express-async-errors
+
+    We don't want to rely on next(), because maybe some other devs will not understand, so will do:
+      app.all("*", async (req, res) => {
+        throw new NotFoundError();
+      });
+
+    For this will install express-async-errors in auth folder.
+      https://www.npmjs.com/package/express-async-errors
+
+    Install this into the auth folder:
+
+      npm i express-async-errors
+
+    express-async-errors is going to change the default behavior of how Express handles route handlers like the one we 
+    just put together right here:
+
+      app.all("*", async (req, res) => {
+        throw new NotFoundError();
+      });
+
+    This little package is going to make sure that express does an await statement on this function:
+
+      (req, res) => {
+        throw new NotFoundError();
+      }
+
+    When we throw an error, inside of async function, this package will make sure that express listen for it.
+    Will import it inside server.js file.
+
+      import "express-async-errors";
+
+    Inside register.js file we add async:
+
+        async (req: Request, res: Response) => {}
+
+    We can test is inside Postman, POST request, with an valid email:
+      ticketing.dev/api/users/register
+    
+      params: {email: valid, password: valid }
+
+    Now in Postman we get an object with an errors array, with each object being an different error.
+
+      {
+        "errors": [
+          {
+            "message": "Error connecting to database!",
+          }
+        ]
+      }
+    So the errors in register.ts work now, as well, adding async keyword:
+      router.post(
+        "/api/users/sigup",
+        [
+          body("email").isEmail().withMessage("Email must be valid"),
+          body("password").trim().isLength({ min: 4, max: 20 }).withMessage("Password must be between 4 and 20 characters"),
+        ],
+        async (req, res) => {
+
+
+08. Database Management 
+    Each service will have each database.
+
+    08.1. Install mongoose 
+        Inside auth folder:
+
+          npm i mongoose
+
+    08.2. Create Deployment 
+        Inside infra/k8s will create auth-mongo-depl.yaml file.
+
+        The file name is based on:
+          - auth = the service name
+          - mongo = database name 
+          - depl = we create a deployment
+
+        Rerun skaffold if it didn't see this file created:
+
+          skaffold dev
+
+        Now we can see the running pods:
+
+          λ kubectl get pods
+
+          NAME                               READY   STATUS    RESTARTS       AGE
+          auth-depl-546b5b94ff-cr5zc         1/1     Running   0              2m32s
+          auth-mongo-depl-56755c5978-npbn7   1/1     Running   0              2m32s
+          client-depl-5598f78788-m7xvw       1/1     Running   12 (11m ago)   33d
+          comments-depl-776f5b5bbd-kq2w2     1/1     Running   12 (11m ago)   33d
+          event-bus-depl-74c99fb65d-9p68s    1/1     Running   12 (11m ago)   33d
+          moderation-depl-646dd6f5dc-dvxlr   1/1     Running   12 (11m ago)   33d
+          nats-depl-6bfdf6df77-ght7z         1/1     Running   0              2m32s
+          posts-depl-7fb946f864-kb7tq        1/1     Running   12 (11m ago)   33d
+          query-depl-d5f547f7b-n5kzm         1/1     Running   12 (11m ago)   33d
+
+
+        So it looks good.
+
+        We can see auth-mongo-depl-56755c5978-npbn7 pod running.
+
+        So now in theory we are running a copy of MongoDB for our off service.
+
+    08.3. Connecting to MongoDB
+        Inside server.js add async await function.
+
+        We will not connect to a local MongoDB instance, instead the instance is available inside other Pod, called 
+        MongoDB Instance. To connect to this pod we have to use the ClusterIP service, that we just created, when we 
+        create Deployment.
+
+        Any time we are trying to connect to a cluster IP service, we're going to write in the name of that cluster IP service 
+        where we normally put a domain. So go infra directory and then open up the auth-mongo-depl.yaml file.
+
+        Our service for the MongoDB instance has a name:
+
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: auth-mongo-srv
+
+
+        But in our case, we are not really connecting to a MongoDB instance that is available on local host and instead it 
+        is available inside of this other pod, MongoDB instance.
+
+        And remember, it's you connect to that other pod, we have to go through that clusterIP service we had created. Any time 
+        we are trying to connect to a clusterIP service, we're going to write in the name of that clusterIP service where 
+        we would normally put a domain.
+
+        So if we need a reminder, we could always go back to the infra/k8s directory and then open up the auth mongo deployment file.
+        Our service for the MongoDB instance has a name of auth-mongo-srv.
+        
+        Then instead of mongodb://localhost, we will put mongodb://auth-mongo-srv. We are using the default port 27017.
+
+        And then we could put on the name of the actual database inside of there that we want to connect to, /auth. If we 
+        don't put a name, then MongoDB or Mongoose will create the database for us automatically.
+
+          const connectMongoDB = async () => {
+            // if we fail to connect to mongo, we need to cach the error, that is why we use trycatch
+            try {
+              // this comes from auth-mongo-depl, where we have kind: Service
+              // 27017/Db-Name Db-Name will be created automatically
+              await mongoose.connect("mongodb://auth-mongo-srv:27017/auth");
+            } catch (error) {
+              console.error(error);
+            }
+            app.listen(3000, () => {
+              console.log("Listening on 3000!");
+            });
+          };
+
+          connectMongoDB();
+
+        So that's why we're just defining that extra function, just so we can use async await.
+
+    08.4. Mongoose and Typescript 
+        1. First Issue 
+          Is going to come up when we start to create a new user document.
+
+            const user  = new User({email: "test@test.com", password: "123456"})
+
+          whenever we try to pass in properties to anything, TypeScript wants to understand the properties we are passing 
+          in and somehow make sure that you're passing in the correct type of data.
+
+          If we misspelled for ex password word, mongoose will not know this, so we have to teach mongoose about each type.
+
+          TypeScript is not going to complain because TypeScript is not going to be given enough information by Mongoose by 
+          default to understand the different types of arguments or the names of these properties that we are supposed to pass in.
+
+
+
+        2. Second Issue 
+          So with issue number two, at some point in time, we are going to create a new user and we might assign it some 
+          properties like, email and password. That's then going to give us back a user document.
+
+          Let's imagine that we add in a console log of user.
+
+            console.log(user)  // {email: "test@test.com", password: "123456", createdAt: "...", updatedAt: "..."}
+
+          If we console user will see that there are more properties on user. So behind the scenes, Mongoose added a couple 
+          of additional properties as well, that we didn't add.
+
+          We have to teach mongoose that there are 2 types of properties:
+            - the ones that we pass in the User constructor
+            - the ones that we have to access after the user document was created
+
+    08.5. Create Model 
+        Inside auth folder/src create models folder and inside add user.ts.
+
+        Solving first issue
+
+          For example, let's just try to create a new user.
+            new User({
+              email: "test@test.com",
+              pass: 43434343,
+              otherProp: "rerere"
+            })
+
+          So even though you and I know that we want to give that Mongoose constructor an email and a password that are 
+          both strings, because that's what we told Mongoose:  
+          
+            const userSchema = new mongoose.Schema(
+              {
+                email: {
+                  type: String,
+                  required: true,
+                },
+                password: {
+                  type: String,
+                  required: true,
+                },
+              },
+            )
+
+          TypeScript has no idea that that is the case. So if I start to mangle these properties, if I accidentally put pas, 
+          instead of password, TypeScript says, hey, who cares? We don't get any errors. I can add in extra properties. 
+          No problem. I can even change this password from a string to a number. Also, no issue whatsoever.
+
+          So you can start to see right away that TypeScript has no idea about what is going on with the arguments that 
+          you're passing to this constructor.
+
+          Will create an interface. To create a new user, you must provide an email that's a string and a password that 
+          is a string.
+
+            // Interface that describes the properties
+            // that are required to create a new record, new User
+            interface UserAttrs {
+              email: string;
+              password: string;
+            }
+
+          
+          Will make a trick using a function buildUser() to inform TS about what are the required properties. Any time that we 
+          want to create a new user, we are going to call this function instead of calling: new User.
+
+            const buildUser = (attrs: UserAttrs) => new User(attrs);
+
+          Because we are never going to write out new user directly inside of our code, instead, we're going to call 
+          buildUser. TypeScript is going to be aware of the set of arguments that must be provided to this function.
+          
+          Now when we want to create a new user we only call buildUser().
+
+          And now any time we want to create a user or kind of work with users in any way, we now have to import two different 
+          things
+          
+            export { User, buildUser };
+
+          from this file that is not super convenient.
+
+        
+        Adding Static Properties to a Model
+
+          It is a better way:
+            userSchema.statics.build = (attrs: UserAttrs) => new User(attrs);
+
+          So this is how we get a custom function built into a model. We add it to this static property on our schema.
+
+          With this TS will not know about build method, so we need to inform TS about it and what arguments has.
+
+          Bun now TypeScript does not understand what it means to assign a property to the statics object.
+
+          Will add another interface to tell TS about User Model props. So we're going to write out an interface that's going 
+          to essentially tell TypeScript that there's going to be a build function available on this user model.
+
+            // Interface that describes the properties
+            // that User Document has
+            interface UserDoc extends mongoose.Document {
+              email: string;
+              password: string;
+              // we don't tell to mongoose to add these props for us
+              // createdAt: string;
+              // updateddAt: string;
+            }
+
+            interface UserModel extends mongoose.Model<any> {
+              build(attrs: UserAttrs): any;
+            }
+          So now that we've got this interface put together, TypeScript can understand about what a real user model is.
+          All we have to do is really tell TypeScript about the existence of this UserModel interface.
+          
+            const User = mongoose.model<any, UserModel>("User", userSchema);
+
+          And we can use the build method:
+            User.build({
+              email: "test@test.com"
+              password: "dsadas"
+            })
+
+          So we've now told TypeScript about this additional property, the build one, that the User model is going to have.
+
+        Defining Extra Document Properties - Solving second issue
+          To solve this we need another interface. On this will add all the props that and instance of a User must have.
+
+          We're going to say that the definition of what a user document is make all the different properties that a normal 
+          document has and we're going to add a couple more on top.
+
+            interface UserDoc extends mongoose.Document {
+              email: string;
+              password: string;
+              // we don't tell to mongoose to add these props for us
+              // createdAt: string;
+              // updateddAt: string;
+            }
+
+          So in this case, we're going to say that an instance of a user is going to have an email that is a string and a 
+          password that is a string. So those are the properties that a single user has.
+
+          But again, if we had those extra properties, createdAt and updateddAt, that is where we would add them.
+
+          We're now going to take this interface and we're going to apply it down at the very bottom. Will replace the <any> 
+
+            const User = mongoose.model<any, UserModel>("User", userSchema);
+
+          right there with UserDoc
+
+            const User = mongoose.model<UserDoc, UserModel>("User", userSchema);
+
+          Now rather than returning <any> we're going to instead indicate that we are going to return an instance of a user or 
+          a user document, <UserDoc>.
+
+            interface UserModel extends mongoose.Model<UserDoc> {
+              // this is going to tell TypeScript about the existence of the build method
+              //  and what properties it accepts.
+              // It's going to take an argument called attrs.It must be of type UserAttrs
+              // when we call build we return an instance of a user, a user document
+              build(attrs: UserAttrs): UserDoc;
+            }
+
+          Generic TypeScript
+            Angle bracket syntax we see right here is the generic syntax inside a typescript.
+
+              <UserDoc, UserModel>
+
+            These generic are functions or types.
+
+            When we normally call a function inside of TypeScript or JavaScript, we pass in a set of arguments and those 
+            arguments customize how that function behaves.
+
+              const User = mongoose.model("User", userSchema);
+
+            The same thing is true for this list of generic type arguments as well.
+
+              const User = mongoose.model<UserDoc, UserModel>("User", userSchema);
+
+            You can really think of these as being some arguments to the function of model. But instead of being a data type 
+            or an actual value, like let's say a string of user, or this user schema thing
+
+              ("User", userSchema)
+
+           instead, they are customized types.
+
+    08.6. Implement User model 
+        We add user model inside register.js.
+
+          import { User } from "../models/user";
+
+        Will find the user by email.
+          const { email, password } = req.body;
+
+          // if no user find, existingUser will be null
+          const existingUser = await User.findOne({ email });
+
+        
+        We create a new user and save it to database.
+          const user = User.build({ email, password });
+          await user.save();
+
+        We add status 201 if the record was created and we send the entire user:
+          res.status(201).send(user);
+
+    08.7. Test is in Postman 
+        We can test create user route in Postman:
+          ticketing.dev/api/users/register
+
+        If we try to register the same user twice will get back and empty {}.
+
+    
+    08.8. Error handle register
+        Inside register.js we have now:
+          if (existingUser) {
+            console.log("Email in use!");
+            res.send({});
+          }
+
+        But we need to make a proper error to send it back to client.
+
+        Create bad-request-error.ts inside errors folder. BadRequestError will have same structure like RequestValidationError and DatabaseConnectionError. 
+        
+        This BadRequestError will have a general purpose. We're going to throw it any time when anything goes wrong if we don't have some reason to make a more general use case thing.
+
+        Will use the serializeErrors() to return this.msg 
+          serializeErrors() {
+            return [{ msg: this.msg }];
+          }
+
+        that will use in register.ts
+
+          // if the user already exists
+          if (existingUser) {
+            // console.log("Email in use!");
+            // res.send({});
+            throw new BadRequestError("Email exists already!");
+          }
+
+        If we test this in Postman 
+          ticketing.dev/api/users/register
+        
+        with a valid user email and password
+          {
+            "email": "test2@test.com",
+            "password": "123456"
+          }
+
+        will get an answer that this user was saved in database, but if we try again this route in Postman
+          ticketing.dev/api/users/register
+        
+        will get the error make it in BadRequestError and use it in register.ts 
+          throw new BadRequestError("Email exists already!");
+
+        so in Postman will see the same
+          {
+              "errors": [
+                  {
+                      "msg": "Email exists already!"
+                  }
+              ]
+          }
+
+
+09. Password hashing - on registering user
+    So we create a new user document and persist that to MongoDB. 
+
+      {
+        "email": "test2@test.com",
+        "password": "123456"
+      }
+    
+    So our password is sitting inside of this user's collection in plain text. This is a very bad approach because if anyone 
+    ever got access to our MongoDB database, they would see all the emails and passwords of our users.
+
+    Generally speaking, the server should not trust client side code, since it can be manipulated. So you send the password to 
+    the server, and let the server process it. And you use a secret on the server to generate the hash, along with the salt.
+
+    This guarantees that if your server DB is compromised, the passwords will still not be recoverable. There's no way to make 
+    a secret available client-side that is secure.
+
+    When we hash the password string is going to produce a unique series of characters that are unique just for that word.
+
+    On Login user will hash again the user password and will compare it with the one that exists already in database.
+
+    We're going to make a separate file or more specifically, a separate class that is just responsible for taking a string and 
+    hashing it. Wil use this file inside User model file.
+
+    We're also going to have inside that class a function that's going to compare to different hash strings as well.
+
+    The reason we're doing this is to just keep our user model file a little bit cleaner, because right now there's a lot of 
+    stuff already inside of here and a lot of the stuff is pretty confusing. So we want to limit the complexity of this file 
+    as much as possible.
+
+    Create a folder called services and inside add password-hash.ts file. I like to create a services directory for just a lot 
+    of general purpose things that are floating around the application.
+
+    Will use crypto.
+
+      crypto.scrypt( password, salt, keylen, options, callback )
+
+        password: It can hold string, Buffer, TypedArray, or DataView type of data.
+        salt: It holds string, Buffer, TypedArray, or DataView type of data. It must be as unique as possible. Moreover, it 
+        is suggested that a salt should be random and is at minimum 16 bytes long.
+
+        keylen: It is the length of the key and it must be a number.
+        options: It is of type Object and it has seven parameters namely cost, blockSize, parallelization, N, r, p, and maxmem.
+
+        link for what are options:
+          https://www.geeksforgeeks.org/node-js-crypto-scrypt-method/
+
+
+      import { scrypt, randomBytes } from "crypto";
+      import { promisify } from "util";
+
+      scrypt =  is the hashing function, that will use. Downside to this function is that is callback based, because in our 
+      project we use async, await functionality.
+      promisify =  will use promisify to transform scrypt, from a callback based, into a promise based implementation, that 
+      is compatible with out async, await.
+
+      const scryptAsync = promisify(scrypt);
+
+      class PasswordHash {
+        // Make in this class 2 static methods: toHash and compare
+        // static methods can be access wihout making an instance of this class
+        // like Password.toHash
+        static async toHash(password: string) {
+          // generate a salt
+          // this will return a Buffer, that is like an array with raw data(original data, how it was first time, unmodified)
+          const salt = randomBytes(8).toString("hex");
+          // because TS doesn't know about what buf is will use Buffer to help TS
+          const buf = (await scryptAsync(password, salt, 64)) as Buffer;
+
+          // will return the hash result with the salt
+          // hex is because we work with the buffer, that is not a string
+          // so we turn it into a string with toString()
+          return `${buf.toString("hex")}.${salt}`;
+        }
+
+        // suppliedPassword is the one that comes from the user after login
+        static async compare(storedPassword: string, suppliedPassword: string) {
+          // hashedPassword is the one stored in database
+          const [hashedPassword, salt] = storedPassword.split(".");
+          // this is the password after login
+          const buf = (await scryptAsync(suppliedPassword, salt, 64)) as Buffer;
+
+          return buf.toString("hex") === hashedPassword;
+        }
+      }
+
+
+    9.1   Add Hashing Password To User
+
+      Mongoose does not really have great support out of the box for async, await syntax. Instead to handle any kind of 
+      asynchronous code that we want to run inside this callback function, we get this done argument. 
+
+         userSchema.pre("save", async function (done) {}
+
+      So we are responsible for calling done once we have done all the work we need to do inside of here.
+
+        userSchema.pre("save", async function (done) {
+          if (this.isModified("password")) {
+            // get the hashed version of password
+            const hashed = await Password.toHash(this.get("password"));
+            // update the updated or new password with the hashed version of it
+            this.set("password", hashed);
+          }
+          // call done because we done all the all async work
+          done();
+        });
+
+      Will implement this PasswordHash in the User model, to hash the password everytime when we save the users password to 
+      database, inside this mongoose middleware function:
+        userSchema.pre("save", async function (done) {}
+
+      Now if we test to create a new user in Postman
+        ticketing.dev/api/users/register
+
+      will get a hashed password
+        {
+          "email": "test3@test.com",
+          "password": "ab57bfa4a1577d8fb0b8a4ac15e94ca0a9fd33b8a79bf3e0917f19ebde09f5c85d88946b2e0475c966cbde2f73f4f75ac317ee22663dcad28ab319d82cad1cda.ec14617773647658",
+          "_id": "61ba35786b4e97a05aca8c36",
+          "__v": 0
+        }
+
+
+10. Login user
+    Login user into applicaton is challenging in microservices, because is not a perfect solution to handle this.
+
+    We have to answer to this question: "Is the user logged in".
+
+    1. First option
+      Individual services rely on the only one big outside Auth Service as a gateway.
+
+      First donwside = this approach is not good because if the auth service is down we can't login any user anymore.
+
+    2. Second option
+      Individual services know how to authenticate the user.
+
+      Will teach each service how to decide if the user is authenticated or not. Each service will know how to look at JSON token, 
+      Cookie, etc and decide if the user is authenticated.
+
+      So in this scenario, we have no dependency on outside services, no dependency on a gateway, some other service or 
+      anything like that. Everything is wrapped  in one service and if a user wants to login will know if the user is logged in 
+      or not.
+
+      So it immediately might seem like fundamental option number two is way better because we don't have any outside dependency.
+
+      First upsides of this approach are very clear = We do not have any outside dependency, as we did previously on this service.
+
+      First donwside =  is that will duplicate the auth code for every service. 
+      That's not a big deal. 
+      We could easily move this authentication logic into a shared library that's used among all of our services to pass this 
+      bad downside.
+
+      Second downside = if a person, that worked in a company, is fired, will put a flag in database, from hasAcces = true, 
+      the admin will change hasAcces = false. The problem is that before to this ban operation, this person was loggedin and 
+      on this step the cookie, token, etc, was saved in his computer. 
+
+      So even he is banned in database, when he will make a request to loggin, the service order, for ex, that was teached to 
+      auth see if the user is logged in or not, will recognize the token and will login the user.
+
+    3. Conclusion
+      Will choose second option, because will go on idea of independent services.
+      This whole project rely on async comunication, witch leads to independent services.
+
+      Stephen will explain how to solve the second downside, of this choosed option: we have to give to the authenticated user 
+      a token that is valid only for 15 minutes. We can do this with JWT, because has this mechanism.
+
+11. Cookie vs JWT 
+    Cookie 
+      When we make a request to a server, the server can send back a response with a cookie, that is a string, in header. 
+      
+      This string is stored in the user's browser. Then when the browser makes another request to the same domain, for the same 
+      port, the browser will take that string and will attach it to the request header and send it to server. 
+
+      That's it with cookies.
+
+    JWT 
+      JWT will take a piece of information, and object called payload
+        {user: "dsadasdsa", password: "gdfg343"}
+
+      and will use its algorithm to secure this information, given us back a token, that looks like an encoded string 
+        jsdfh45rsfdf435435tsdsdt
+
+      Once we have this token we can comunicate between the browser and the server.
+
+      We have 3 options to send the token in request:
+        1. in header we put JWT token on Authorization
+        2. put the token inside body request, only if is a POST, DELETE request
+        3. in header we put JWT inside cookie
+
+    Conclusion
+      Cookie is more about transport mechanism, not ment to only for authentication mechanism, but we can transport different 
+      data between browser and server.
+
+      Cookie is automatically managed by the browser.
+
+      Expiration date for cookie is handle by the browser. The user can take that cookie, delete the expiration date and still 
+      use the cookie.
+      
+      JWT is only about authentication and authorization mechanism.
+      JWT we have to mange it manually, on frontend, unless is a JWT stored in a cookie.
+      Expiration date for JWT is encoded in the resulted token, so when JWT will expire will not be valid anymore and the user 
+      can't modidify the expiration date, to still use it.
+
+
+      So as a reminder, we are not really building a very normal React application.
+      Instead, we are building a server side rendered React application.
+
+      The idea behind a server side rendered React app is that we are going to make some initial request to some backend server.
+      This backend server is then going to render out or build the HTML for our entire app and then send that HTML file with all 
+      the content inside of it, all the relevant orders or tickets or whatever else already rendered as HTML.
+
+      We're going to send that response back over to the browser. The browser is going to get that HTML file and instantly 
+      have some content to show to the user on the screen without having to make all those follow up requests to get some 
+      JavaScript files, like we do in a normal React app, without using NextJS library.
+
+      Because we are doing server side rendering(NextJS) and because this first request, login request, needs to have 
+      authentication information and because we cannot customize that 1st request of app in any way to try to attach on an 
+      additional header, 1st option, or some information inside the body, 2nd option, we have to communicate our JWT inside of 
+      a cookie, the 3rd option.
+
+      The whole reason we are using the server side rendering approach is for SEO purposes, search engine optimization and also 
+      page load speed. If our user has an older device or a mobile device for that matter.
+      
+      So at this point, we've essentially established that we're going to use a Jason Webb token and it's going to be stored 
+      inside of a cookie.
+
+      In this case, we're saying that we're going to use a JSON Web token to store our auth information, but the cookie is going 
+      to be the transport mechanism.
+
+      That's how we actually move the cookie around between the browser and the server.
+
+12. Cookie Session
+    To solve the situation sending cookie, with JWT, around different service, will use cookie session package. Inside auth 
+    folder run:
+      npm i cookie-session @types/cookie-session
+
+    By default doesn't have TS suport so we have to install also a type definition file, to let TS to understand what is going 
+    on inside of this library.
+
+    Will use this library inside server.ts and will give some configurations. 
+    
+    Thinking that different services will have different languages(React, VueJS, NodeJS, Java), we have do disable encryption 
+    on the cookie to work in those different languages easier. If we think that this is unsafe, we have JWT encrypted, so we 
+    are good. We disable encryption on the cookie because JWT is already encrypted.
+
+      app.use(
+        cookieSession({
+          // disable encryption on the cookie
+          signed: false,
+          // if the user visits our app on https connection, a very small security improvement
+          // because we add this setting we have to add above app.set()
+          secure: true,
+        })
+      );
+
+    
+
+      app.set("trust proxy", true);
+
+    We use this because trafic is been proxied to our applicaton through Ingress Nginx.
+
+    Express will see that trafic is proxied and by default will say: there is a proxy here, I don't trust this https connection. 
+    So we add this setting to let express to know that is behind the proxy of Ingress Nginx and to trust trafic, as being secure, 
+    even is comming from that proxy.
+
+    Now we have the ability to eventually set a cookie, on Headers, on the response that goes back to a user. The last thing we 
+    actually have to do is make sure that we generate that JSON web token and store it inside the cookie.
+
+13. Generating JWT 
+    Inside auth folder install: 
+      npm i jsonwebtoken @types/jsonwebtoken
+
+    Will use it inside register.ts file.
+
+      // 1. Generate jsonwebtoken
+      // because we didn't use a callback inside jwt, this call will be sync
+      // so will get jwt token instantly
+      // We want only id and email, not password, from User
+      const userJWT = jwt.sign(
+        {
+          id: user.id,
+          email: user.email,
+        },
+        process.env.JWT_KEY!
+      );
+
+      // 2. And storit it on session object, on request object
+      // because we use TS we can't do like in docs
+      // req.session.jwt = userJWT;
+      // because the type definition that is handled by TS doesn't want to assume that
+      // there is an object in req.session
+      req.session = {
+        jwt: userJWT,
+      };
+
+    The cookie session library is going to take this object, 
+      req.session = {
+          jwt: userJWT,
+        };
+    serialize it and then send it back to the user's browser.
+    
+    Now we can test in Postman.
+      ticketing.dev/api/users/register
+    
+    After we create a new user we can go to Cookies tab and will see that we don't have any cookie, even we successful 
+    logged in into applicaton. The reason for this is that the cookieSession middleware we configured to say: ignore any cookies, 
+    if the user is connected over an http connection.
+
+    If we send again the request using https
+      https://ticketing.dev/api/users/register
+
+    will get in Postman, on the Cookie tab, that the cookie has been set under the Value tab. 
+    This is actually our JWT, base64 encoded, set by cookieSession. 
+
+    Not exactly a JSON Web token, but it does kind of technically contain it.
+
+    The value that we're actually looking at is that session object that we just set. 
+    So in other words, this session object right here that got turned into JSON and then base64 encoded.
+
+    Now for every request in our app this cookie will be included, having our JWT.
+    To decode this token we copy that cookie, from Postman, Cookie tab and go to website
+      https://www.base64decode.org/
+
+    paste that cookie here and get the actual JWT. Then copy this and paste it inside
+      https://jwt.io/
+
+    and will get the jwt decoded:
+      {
+        "id": "61bb24f47b4fdd2b8a4ecbd6",
+        "email": "test5@test.com",
+        "iat": 1639654644
+      }
+
+    If you made this follow up request and it resulted in an error, if Postman said sorry, insecure connection or connect, 
+    connect or something like that. But it was working previously without the https. Then here's what to do.
+
+    Go up to postman preferences. And then on this menu, you're going to make sure that SSL certificate verification is turned off.
+
+    Because remember, right now we have an invalid temporary certificate being served by ingress nginx.
+
+
+  13.0 JWT Signin Key 
+    Any time that we are going to receive this JSON Web token inside of another service, when we need to see whether or not it 
+    is a valid token to decide whether or not this user is actually logged in.
+
+      const userJWT = jwt.sign(
+        {
+          id: user.id,
+          email: user.email,
+        },
+        // process.env.JWT_KEY!
+        "dasdsa"
+      );
+
+    That means that those other services are going to need to get access to that signing key, because it's only with that 
+    signing key that we can make sure that a token is actually valid.
+
+  13.1. Securely storing Secrets
+      We need to make our JWT on login available for all services. Will solve this using a feature inside Kubernetes, that is 
+      designed for sharing secret information for differe parts to application.
+
+      Will create a new object, called Secret, inside of our Kubernetes cluster. Remember a pod, a deployment, etc all are 
+      objectes. The Secret is an object as well and inside we can store key value pairs information. The Secret will be exposed 
+      as Env Variables, for each different service.
+
+  13.2. Create Secrets 
+      Will run this commands in project root, to create Secrets:
+
+        kubectl create secret generic jtw-secret --from-literal=JWT_KEY=DragomirSorin
+
+        generic = there are diferent types of secrets to create in Kubernetes and with this the real secret we want to create
+        jtw-secret = this the name of the variable that we want to create and use inside auth-depl.yaml
+        JWT_KEY=DragomirSorin = we can se different key value pairs here and here we have the key jwt and the string
+        DragomirSorin = the actual string that will be transformed in secret
+
+      This is an imperative command in Kubernetes that will directly create an object. This is the first time when we use an 
+      imperative commad. Before all the commads we used were declarative, were we wrote a configuration file, then applied that 
+      configuration file.
+
+      We used this imperative commad because we don't want to use a config file that will show the secret value.
+
+      The downside to use this is that everytime we create a cluster we have to remember all the secrets that we created in time.
+
+      Get a list of different secrets, that exists inside of our cluster:
+        kubectl get secret
+
+
+  13.3. Adding Secrets
+      Will open the auth-depl.yaml and inside here we have to tell Kubernetes to include Secrets as Env Variables, inside of 
+      this auth container.
+
+        env:
+          # name of Env Variable, for this auth container
+          - name: JWT_KEY
+            # tell Kubernetes that we want the value secret that we just create with imperative command
+            valueFrom:
+              # secret key reference
+              secretKeyRef:
+                # name of the secret
+                name: jtw-secret
+                key: JWT_KEY
+
+      Then the final auth Deployment will be like this:
+
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: auth-depl
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: auth
+          template:
+            metadata:
+              labels:
+                app: auth
+            spec:
+              containers:
+                - name: auth
+                  image: kiddodragon/auth
+                  env:
+                    # name of Env Variable, for this auth container
+                    - name: JWT_KEY
+                      # tell Kubernetes that we want the value secret that we just create with imperative command
+                      valueFrom:
+                        # secret key reference
+                        secretKeyRef:
+                          # name of the secret
+                          name: jtw-secret
+                          key: JWT_KEY
+
+      If we made a mistake on the key name we can test the error by opening another terminal in root:
+        kubectl get pods 
+      
+      Here will have a CreateContainerConfigError pod and will log this:
+        kubectl describe pod auth-depl-754484c998-6kq4f
+
+      So if we made a typo in secrets name, Kubernetes will not start that pod.
+
+      Now we use this JWT_KEY inside register.ts file:
+        const userJWT = jwt.sign(
+          {
+            id: user.id,
+            email: user.email,
+          },
+          process.env.JWT_KEY
+        );
+
+      For this line will get and error from TS:
+        process.env.JWT_KEY
+      because TS thinks that this is string ori undefined 
+        string | undefined
+      
+      We don't want to get error for an incorrect Env Variable after the app start, in some point of time, when we play with 
+      the application.
+
+      So we don't want to add this on register.ts, in top of userJWT definition.
+        if(!process.env.JWT_KEY) {
+          throw new Error("Undefined env variable...")
+        }
+
+      But we want to check if the Env Variables are not defined when the first startup the application. So we must throw an 
+      error when the app starts to know immediately, once we do our deployment, what is wrong, rather than trying to capture 
+      that error way on down the line when our application is actually been running possibly for some amount of time.
+
+      So rather than doing the check this check, I'm going to delete it:
+
+        if(!process.env.JWT_KEY) {
+          throw new Error("Undefined env variable...")
+        }
+
+      and open server.ts file and inside start function and before we want to connect to MongoDB instace, we add 
+      a check to verify that Env Variable is defined.
+
+        const connectMongoDB = async () => {
+          if (!process.env.JWT_KEY) {
+            throw new Error("JWT_KEY must be defined ");
+          }
+          // if we fail to connect to mongo, we need to cach the error, that is why we use trycatch
+          try {
+            // this comes from auth-mongo-depl, where we have kind: Service
+            // 27017/Db-Name Db-Name will be created automatically
+            await mongoose.connect("mongodb://auth-mongo-srv:27017/auth");
+            console.log("MongoDB connected!");
+          } catch (error) {
+            console.error(error);
+          }
+          app.listen(3000, () => {
+            console.log("Listening on 3000!");
+          });
+        };
+      
+      TS will not know that we add this check inside server.ts, so will still get an error inside register.ts on this line:
+        process.env.JWT_KEY
+
+      We can solve this adding exclamation sign:
+        process.env.JWT_KEY!
+
+      This will tell to TS that we already check this thing and we know for sure that this Env Variables is defined.
+
+      Now we can test in Postman, with a new user, to create a user:
+         https://ticketing.dev/api/users/register
+
+      In Cookies tab will still get the cookie, so everything works fine.
+
+      So iof we ever forgot to add that in auth-depl.yaml this env:
+      
+        env:
+          # name of Env Variable, for this auth container
+          - name: JWT_KEY
+            # tell Kubernetes that we want the value secret that we just create with imperative command
+            valueFrom:
+              # secret key reference
+              secretKeyRef:
+                # name of the secret
+                name: jtw-secret
+                key: JWT_KEY
+
+      then if this secret didn't exist or whatever else, we would still create this auth-depl pod without an issue.
+
+      So if for some reason we forget to do that, then we'll capture it right here, before connecting to MongoDB:
+
+         const connectMongoDB = async () => {
+          if (!process.env.JWT_KEY) {
+            throw new Error("JWT_KEY must be defined ");
+          }
+          // if we fail to connect to mongo, we need to cach the error, that is why we use trycatch
+          try {}
+
+      And we'll start to throw an error, 
+      
+         throw new Error("JWT_KEY must be defined ");
+      
+      which we will detect immediately when we start to deploy our code.
+
+
+14. Remove Password from Response
+    When we get the response inside Postman, we don't what to see some propertie, like password.
+    If we use different libraries on FE, on different services, we can't implement in the same way the password removal.
+    If we have a normal object in JavaScript:
+      const myObj = {name: "alex"}
+
+    and we use 
+      JSON.stringify(myObj)
+
+    Answer:
+      "{name: "alex"}"
+
+    If we don't want all the keys to be stringified we use toJSON method inside the object:
+      const myObj2 = {name: "alex", toJSON() {return 1979}}
+
+    Answer:
+      "1979"
+
+    So as you guess, well, we can pretty much do something like this to make sure that whenever we send some JSON data, tied to 
+    a user, back to the browser or in a response, we can define that to JSON method and then customize exactly what we return.
+
+    So we can remap some properties, we can delete properties and so on.
+
+    So inside this object, we're going to define to JSON.
+
+      toJSON() {return 1979}
+
+    And rather than being a function, how we have in JavaScript, instead it is going to be an object, because now toJSON comes 
+    from Mongoose.
+
+    Inside of here, we're going to define a set of properties that are going to help Mongoose take our user document and turn 
+    it into JSON.
+
+    If we CTRL + Click on toJSON we can see what to JSON should be.
+      toJSON?: DocumentToObjectOptions;
+
+    If we CTRL + Click on DocumentToObjectOptions we get all the properties that we can use in toJSON object:
+      interface DocumentToObjectOptions {
+        /** apply all getters (path and virtual getters) */
+        getters?: boolean;
+        /** apply virtual getters (can override getters option) */
+        virtuals?: boolean;
+        /** remove empty objects (defaults to true) */
+        minimize?: boolean;
+        /**
+        * A transform function to apply to the resulting document before returning
+        * @param doc The mongoose document which is being converted
+        * @param ret The plain object representation which has been converted
+        * @param options The options in use (either schema options or the options passed inline)
+        */
+        transform?: (doc: any, ret: any, options: any) => any;
+        /** depopulate any populated paths, replacing them with their original refs (defaults to false) */
+        depopulate?: boolean;
+        /** whether to include the version key (defaults to true) */
+        versionKey?: boolean;
+        /** whether to convert Maps to POJOs. (defaults to false) */
+        flattenMaps?: boolean;
+      }
+
+    transform is the option we are going to use to kind of massage how our user document gets turned into JSON.
+    In this direction we use toJSON inside user.ts model.
+
+      {
+        toJSON: {
+          // doc is user document
+          // ret is what will be transformed into a json
+          transform(doc, ret) {
+            // remove the password
+            // delete comes from js and  will remove a prop from and object
+            delete ret.password;
+          },
+        },
+      }
+
+    Test in Postman if we removed the password.
+      https://ticketing.dev/api/users/register
+
+    Answer: 
+      {
+        "email": "test7@test.com",
+        "_id": "61bba505612fc304786ddddf",
+        "__v": 0
+      }
+
+    Repet the same process to remove __v and rename _id to simple id. So we have to add in the above object:
+      ret.id = ret._id;
+      delete ret._id;
+      delete __v;
+
+    Test in Postman:
+      https://ticketing.dev/api/users/register
+
+  
+15. Login flow 
+    Open login.ts route file and add almost the same code like in register.ts file.
+
+
+16. Common Request Validation Middleware 
+    Will take the common code from login.ts and register.ts and will make this middleware.
+    
+      const ValidateRequest = (req: Request, res: Response, next: NextFunction) => {
+        const errors = validationResult(req);
+
+        // errors is an obj
+        if (!errors.isEmpty()) {
+          // handle the errors by taking the errors obj and make it an array
+          // that can be send as json data
+          // return res.status(400).send(errors.array());
+          throw new RequestValidationError(errors.array());
+        }
+
+        // if we pass the above code continue to read to code from the project
+        next();
+      };
+
+    Implement this new middleware in login and register files.
+
+17. Current User Route
+    Our REACT application is going to need to figure out whether or not the user is signed into our application.
+
+    The REACT application cannot directly look at the cookie and try to inspect and decide whether or not there is a valid 
+    JSON Web tokens inside there.
+
+    We have set up our cookies in such a way that they cannot be executed or accessed from JavaScript running inside the browser.
+
+    So instead the REACT application needs to be able to make a request to something inside of our app to figure out whether 
+    or not the user is currently logged in.
+
+    And that is the goal of this current user root handler.
+
+    That request is going to include a cookie if it exists, so we are going to get a cookie with this incoming request, 
+    maybe if the user is not logged in, there will be no cookie.
+
+      if (!req.session.jwt) {
+        res.send({ currentUser: null });
+      }
+
+    If we hover over req.session.jwt, you'll see a error that typescript is being told by the cookie session property might 
+    be either null, undefined or an actual cookie session object.
+    
+    The only scenario where we're going to have this object really be null or undefined is if we somehow get to this root 
+    handler, in server.ts app.use(cookieSession), without first executing this cookie session middleware. That is why we get 
+    this TS error.
+
+    We fix this by adding a check.
+      if (!req.session || !req.session.jwt) {
+        res.send({ currentUser: null });
+      }
+
+    We can condense this using a TS operator:
+      if (!req.session?.jwt) {
+        res.send({ currentUser: null });
+      }
+
+    Test is in Postman with a GET, after you login first:
+      https://ticketing.dev/api/users/currentuser
+
+    Answer:
+      {
+        "currentUser": {
+          "id": "61bd61eecefb3caa4c6f210d",
+          "email": "test11@test.com",
+          "iat": 1639801459
+        }
+      }
+
+    We can check the Cookie tab and will see that we have the cookie there.
+    
+    If we get an answer like:
+      { currentUser: null }
+
+    we have to make sure that we use https for the route:
+      https://ticketing.com/api/users/currentuser
+
+    If we delete the cookie from Postman, the Cookie tab, and we make the request again will get:
+      { currentUser: null }
+
+    because we don't have the cookie included.
+
+18. Logout Route 
+    Will use the cookieSession here too, because cookieSession is handling the cookie.
+    What we have to do is to destroy the session:
+      req.session = null;
+
+    Try it in Postman:
+      https://ticketing.com/api/users/signout
+    
+    We have to check, after logout, in the Cookies, to not have any cookie.
+
+    If we run current user route:
+      https://ticketing.com/api/users/currentuser
+
+    we get:
+      { currentUser: null }
+
+
+19. Current User Middleware
+    We create, inside middlewares folder, the current-user.ts file.
+    Inside we create currentUser() and we import and use it, as middleware, inside current-user.ts route.
+
+    We can test this implementation in Postman:
+
+      ticketing.com/api/users/signup
+      https://ticketing.com/api/users/signin
+      https://ticketing.com/api/users/currentuser
+
+      If the user is loggedin we get from currentuser route:
+        {
+          "currentUser": {
+            "id": "663e53a760a881002ac5d357",
+            "email": "test@test.com",
+            "iat": 1715360683
+          }
+        }
+
+      but if the user is not loggedin we get:
+        { currentUser: null }
+
+
+    The benefit of this middleware is that everytime a route needs to know what the current user is, will use this middleware.
+
+    In the future we extract this middleware to use it in the other services as well.
+
+20. Require Auth Middleware
+    We create, inside middlewares folder, the require-auth.ts file.
+    Will use this middleware to throw an error if the user is not logged in and try to make any request.
+
+    So this middleware should run, before we use currentUser middleware. In outher words if req.currentUser is not defined, 
+    that means we need to reject this request and respond with an error.
+
+      export const requireAuth = (
+        req: Request,
+        res: Response,
+        next: NextFunction
+      ) => {
+        if (!req.currentUser) {
+          // 401 forbidden
+          return res.status(401).send();
+        }
+      };
+
+    Will create another file, not-authorized-error.ts, 
+      export class NotAuthorizedError extends CustomError {
+        statusCode = 401;
+
+        constructor() {
+          super("Not Authorized");
+
+          // We use this only because we extends a built in class, Error
+          Object.setPrototypeOf(this, NotAuthorizedError.prototype);
+        }
+
+        serializeErrors() {
+          return [{ message: "Not Authorized" }];
+        }
+      }
+    
+    
+    a custom class error, NotAuthorizedError, to handle this response:
+      return res.status(401).send();
+
+    Then inside require-auth.ts file we add this middleware:
+        if (!req.currentUser) {
+          // 401 forbidden
+          // return res.status(401).send();
+          throw new NotAuthorizedError();
+        }
+
+    Now, we don't have any route handlers inside of this app that need to have some kind of requireAuth middleware on them.
+
+    We add temporarily this custom error inside current-user.ts route. So we are going to temporarily make sure that you must 
+    be logged in in order to access current-user.ts route.
+    
+      router.get("/api/users/currentuser", currentUser, requireAuth, (req, res) => {
+        // If the user is not logged in we send back null
+        res.send({ currentUser: req.currentUser || null });
+      });
+
+21. Not Authorized Error custom error
+    Inside errors folder create this custom class error and add it to requireAuth middleware.
+
+    Because we add just for test requireAuth middleware inside current-user.ts route, we can test it.
+
+    We can test this in Postman login first:
+      https://ticketing.com/api/users/signup
+      https://ticketing.com/api/users/signin
+    
+    then see the currentuser works:
+      https://ticketing.com/api/users/currentuser
+
+    Answer:
+      {
+        "currentUser": {
+        "id": "6641c087fe939500827b596b",
+        "email": "test@test.com",
+        "iat": 1715585167
+        }
+      }
+
+    then logout:
+      https://ticketing.com/api/users/signout
+
+    then try currentuser again:
+      https://ticketing.com/api/users/currentuser
+
+    you shoud get:
+
+      {
+        "errors": [
+          {
+            "msg": "You are not authorized"
+          }
+        ]
+      }
+
+
+
+22. Testing in Microservices 
+    Types of tests
+      1. Test a single piece of code in isolation
+        Example: 
+          - single middleware, like requireAuth middleware
+
+      2. Test how different pieces work together
+        Example: 
+          - reguest flowing through multiple middlewares to a request handler
+          - requireAuth middleware working with login route
+
+      3. Test how different components work together
+        Example: 
+        - make request to service, ensure write write to database was complete
+        - test how Auth service interact with MongoDB
+        - test how Auth service interact with Event Bus
+
+      4. Test how different services work together
+        Example: 
+          - creating a payment at the payments service should affect the orders service
+          - testing Ticketing service with Orders service in the same time and one emitting an event and received by the other 
+          service
+          - it is very complicated to test services together, so will test them in isolation
+
+  22.1. Index to App Refactor
+    Will refactoring the project to make possible isolation tests.
+
+    Create app.ts inside auth/src folder. 
+    Move inside this app.ts, from server.ts, everything that is related to app = express().
+
+    Open a terminal inside auth folder and install, only for development purpose:
+      npm i --save-dev @types/jest @types/supertest jest ts-jest supertest mongodb-memory-server 
+
+      mongodb-memory-server = we used to be possible to test different services in the same time, using different instance of 
+      mongodb. So will create a different mongodb instance in memory for each service that we test. In this way will have a 
+      better testing performance.
+
+      The reason we are running a copy of Mongo in memory is that we can easily test multiple databases at the same time.
+
+    Now that 80 megabyte downloaded, when we installed mongodb-memory-server, is something that we really do not want to repeat 
+    every single time that we tried to build up our Docker image for the auth service.
+
+    We're not going to go over to our Docker file and we're going to update it to make sure that whenever we build an image 
+    for the service, we do not attempt to install these development dependencies, that we just installed:
+
+      @types/jest @types/supertest jest ts-jest supertest mongodb-memory-server 
+
+    Still for performance we add --only=prod inside DockerFile.
+    This flag --only=prod no longer exists, and we need to use the --omit=dev flag instead.
+      
+      # Install dependencies
+      # --only=run is to not install mongodb-memory-server everytime, because is very big
+      # so we don't want to wait forever to build a image
+      RUN npm install --omit=dev
+    
+
+  22.2. Test Environment Setup
+    Inside package.json we add, for scripts new command:
+      "test": "jest --watchAll --no-cache"
+
+    This command will tell to jest to watch all tests in the project when a file is changing.
+
+    --no-cache = because jest doesn't have TS support. Because of that jest will be confused when a TS file is changing. So we 
+    add this flag to see all those changes.
+
+
+    Will add then, still inside package.json:
+
+      "jest": {
+        "preset": "ts-jest",
+        "testEnvironment": "node",
+        "setupFilesAfterEnv" : 
+          ["./src/test/setup.ts"],
+        "testTimeout": 60000
+      },
+
+    "preset": "ts-jest" = jest doesn't understand what TS is and we installed a dependecy ts-jest, that will add TS support for us.
+
+    "setupFilesAfterEnv" = will tell jest to run a setup file, inside of our project, after starts everything.
+
+    "testTimeout": 60000 = set the time out to 60 second, to not get this error: Exceeded timeout of 5000 ms for a hook
+    
+    Create inside src this test folder and inside setup.ts file.
+
+    
+  22.3. Our First Test
+
+    First Tests
+    Create, inside routes, __test__ folder, to respect Jest convention and inside create register.test.ts file.
+
+    To test it, inside auth, open a terminal an run: 
+      npm run test
+
+    Createm, inside __test__ folder, login.test.ts file.
+        
+    When will run first time: npm run test will get an error:
+
+        FAIL  src/routes/__test__/signup.test.ts (32.517s)
+          × returns a 201 on successful signup (369ms)
+
+          ● returns a 201 on successful signup
+
+    That is because inside signup.ts file we use process.env.JWT_KEY! and Jest can't find this variable value.
+
+    To fix this will go inside setup.ts and add this line, inside beforeAll:
+      process.env.JWT_KEY = "dsadfgfdgfdgdf"
+
+    Again, not the best way of handling this, but it's going to work for right now.
+
+    There are also few occasions when restarting Jest does not solve the issue of failing tests. These can be related to the 
+    Jest cache.
+
+    To address this, you can add "--clearCache" to the end of the "test" script or create a second test script "test-clear-cache" 
+    like so:
+
+      "scripts": {
+          "start": "ts-node-dev src/index.ts",
+          "test": "jest --watchAll --no-cache",
+          "test-clear-cache": "jest --watchAll --no-cache --clearCache"
+        },
+
+
+
+    We will add inside test folder, setup.ts file, a function to not repeat in any test the register request. Will use it 
+    inside current-user.test.ts file.
+
+      global.login = async () => {
+        const email = "test@test.com";
+        const password = "123456";
+
+        const registerResponse = await request(app)
+          .post("/api/users/register")
+          .send({ email, password })
+          .expect(201);
+        const cookie = registerResponse.get("Set-Cookie");
+      };
+
+      
+    Tell to Jest what to do:
+      - start in memory copy of MongoDB
+      - start up our express app 
+      - use the supertest library to make fake requests to our express app
+      - run assertions to make sure that the request did the right thing
+
+
+  22.4 globalThis has no index signature TS Error
+    In the upcoming lecture (and later with the ticketing, orders and payments services) you may end up seeing a TS error like this in your test/setup.ts file:
+
+    Element implicitly has an 'any' type because type 'typeof globalThis' has no index signature.ts(7017)
+
+    To fix, find the following lines of code in src/test/setup.ts:
+
+      declare global {
+        namespace NodeJS {
+          export interface Global {
+            signin(): Promise<string[]>;
+          }
+        }
+      }
+    change to:
+
+      declare global {
+        var signin: () => Promise<string[]>;
+      }
+
+
+23. React Application 
+  23.1. NextJS
+      Inside root, create a new forder called client and inside run:
+        npm init -y
+
+      Then install 3 dependencies:
+        npm i react react-dom next
+
+      Inside client make pages folder.
+
+      To start the React, Next project we add inside package.json:
+        "scripts": {
+          "dev": "next"
+        },
+
+      We don't use TS on FE, but if we were using we had to run this command, inside root, to create client folder:
+        npx create-next-app client --typescript
+
+  23.2. Client Image 
+      Anytime we want to build an image we have to create a DockerFile. So inside client folder create a DockerFile.
+      Then create a .dockerignore file, because when we will build the client image we don't want to include:
+        node_modules
+        .next
+
+      Now just to make sure that we wrote out the Docker file and the Docker ignore file correctly, I would like to try to 
+      build out this image one time on our local machine manually.
+
+      If we use Kubernetes on Google Cloud we don't have to run the bellow commands.
+
+      Create Image - inside client folder run:
+        docker build -t kiddodragon/client .
+
+      Push Image to Docker Hub 
+        docker push kiddodragon/client
+
+      Create Deployment config file inside infra/k8s folder:
+        client-depl.yaml
+
+      Create Service
+        Still inside client-depl.yaml
+      
+      Update skaffold file
+        Add client for sync
+
+        - image: kiddodragon/client
+          context: client
+          docker:
+            dockerfile: Dockerfile
+          sync:
+            manual:
+              # in client we don't have src to watch
+              - src: "**/*.js"
+                dest: .
+
+      Update ingress file
+        Add client for sync
+
+        - path: /?(.*)
+          pathType: Prefix
+          backend:
+            service:
+              name: client-srv
+              port:
+                number: 3000
+      The one that we just add for the client is essentially a catch all, if any path request comes in.
+
+      So inside of the ingres file we're always going to make sure that we list out the client service at the very, very bottom, 
+      because if we listed at the top, then any incoming request would always be matched against this one, which is definitely 
+      not what we want.
+
+      
+
+      Test the Client
+        Open the browser and type ticketing.com and we should see in page the text from index.js file, from pages.
+
+
+  23.3. NextJS FastRefresh Update 
+      NextJS not always will update in the browser the changes from our files, because of the docker containers. That is way we will make some configuration.
+
+      Inside client folder create next.config.js file:
+
+        module.exports = {
+          webpack: (config) => {
+            config.watchOptions.poll = 300;
+            return config;
+          },
+        };
+
+      This file is loaded automatically by NextJS, when the project startsup.
+
+      Inside we tell to webpack to watch for files changing once every 300 miliseconds.
+
+      Because next.config.js file ends with .js scaffold should sink this file into a running pod automatically.
+      But NextJS does not automatically restart itself whenever we add this file in or make changes to it. We have to restart 
+      the running pod.
+
+      Open a terminal in root(ticketing folder) and list all running pods:
+        kubectl get pods
+
+      Manually kill the client pod
+        kubectl delete pod client-depl-969ffd59f-6jwgr
+
+        Killing this pod, the deployment automatically will create a new pod and the new pod will have this updated file 
+        configuration inside.
+
+      
+
+      Now again, if at any point in time you feel as though you have made a change that is not being reflected inside the browser, 
+      go through the same steps listed above.
+
+      List out all your pods.
+
+      Delete the current client pod.
+
+      That pod will be recreated and the changes 100% should be reflected inside there.
+
+    
+      
+    Small Update for Custom Webpack Config
+      In the upcoming lecture, we will be creating a next.config.js file and adding some configuration to it. 
+      The latest versions of Next.js use a newer version of Webpack which moves watchOptions out from webpackDevMiddleware.
+
+      So, the next.config.js file should now look like this:
+
+      module.exports = {
+        webpack: (config) => {
+          config.watchOptions.poll = 300;
+          return config;
+        },
+      };
+
+
+      Note - If you are using the Next.js / React app and versions from the course resources this change does not apply.
+
+
+  23.4. Bootstrap 
+      Create _app.js file and add bootstrap css import.
+        import "bootstrap/dist/css/bootstrap.css";
+
+      If we have any global css file that has to be included in every page, we have to import it in this _app file.
+
+      Install bootstrap inside client 
+        npm i bootstrap
+
+      When we install bootstrap we make changes to package.json skaffold will not sync changes to package.json file, instead 
+      when skaffold see a change to it, will rebuild the client image.
+
+      Now if we reload the browser ticketing.dev will see bootstrap installed.
+
+
+  23.5. Register user 
+      Route to test:
+
+        https://ticketing.com/auth/signup
+
+      Create inside pages auth folder and inside create register.js file.
+
+      Install axios in client 
+        npm i axios
+
+      If we check in browser, to register a user, we can see that in the network tab, in response header, we see set-cookie token.
+      Don't forget to use https and not http 
+      
+        https://ticketing.com/auth/signup
+      
+      to see the cookie token in response header.
+
+      Adding Hooks
+        Create inside client folder the hooks folder and inside use-request.js file.
+
+          const useRequest = ({ url, method, body }) => {
+            const [errors, setErrors] = useState(null);
+
+            const doRequest = async () => {
+              try {
+                setErrors(null);
+                const response = await axios[method](url, body);
+                return response.data;
+              } catch (err) {
+                setErrors(
+                  <div className="alert alert-danger">
+                    <h4>Ooops....</h4>
+                    <ul className="my-0">
+                      {err.response.data.errors.map((err) => (
+                        <li key={err.message}>{err.message}</li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              }
+            };
+
+            return { doRequest, errors };
+          };
+
+      Will use this hook inside signup.js file:
+
+        const { doRequest, errors } = useRequest({
+          url: "/api/users/signup",
+          method: "post",
+          body: {
+            email,
+            password,
+          },
+        });
+
+        const onSubmit = async (event) => {
+          event.preventDefault();
+          doRequest();
+        };
+        
+  23.6. Server Side Rendering - NextJS
+      Inside client/page we update index.js file and we add:
+
+      const LandingPage = ({ currentUser }) => {
+        console.log("currentUser", currentUser);
+
+        // axios.get("/api/users/currentuser").catch((err) => {
+        //   console.log(err.message);
+        // });
+
+        return <h1>Landing Page</h1>;
+      };
+
+      LandingPage.getInitialProps = async () => {
+        const response = await axios.get("/api/users/currentuser").catch((err) => {
+          console.log(err.message);
+        });
+
+        console.log("responseee", response);
+
+        return { props: response };
+      };
+
+        export default LandingPage;
+      
+      getInitialProps is our opportunity to attempt to fetch some data that this component needs during the server side 
+      rendering process.
+
+      So if we decide to implement getInitialProps, it will be automatically called on the server when NextJS decides to show 
+      this component.
+
+      Using axios inside getInitialProps doesn't work correctly, because client is inside a container and we try to call 
+      localhost:80 inside of that container.
+
+      Will get this error:
+        connect ECONNREFUSED 127.0.0.1:80
+
+      This 127.0.0.1:80 is not localhost on our computer, but this 127.0.0.1:80 is actually the localhost inside a container.
+
+      And again, nothing is listing on local host port 80 inside the container. So that's why we are seeing this nasty 
+      error message here. 
+
+      Whenever we have two pods that need to communicate with each other in a synchronous fashion, we can do so by using those 
+      ClusterIP services. So, for example, if we wanted our client to reach out directly to that pod, we would write out the 
+      name of the clusterIP service. So it would be something like:
+
+        https://auth-srv
+
+
+      Now, unfortunately, this rule right here only works when we're trying to access a service that is inside of the 
+      same namespace.
+
+      Well, a namespace is something that exists in the world of Kubernetes.
+
+      You can think of a namespace as being like a sandbox of sorts. We use namespaces for organizing different objects.
+
+      Whenever we try to make a request and we do not specify the domain by default, your browser is going to assume that you're 
+      trying to make a request to the current domain.
+
+      We have to make the client to comunicate with ingress-nginx, to have this working:
+
+        Home.getInitialProps = async () => {
+          // if the user is not logged in we will get
+          //  "currentUser": null
+          // otherwise will get an object with all data
+          const response = await axios
+            .get("https://ticketing.dev/api/users/currentuser")
+            .catch((err) => {
+              console.log(err.message);
+            });
+          return response.data;
+        };
+
+      All the different objects we create are created under a specific namespace. Right now we've been working under a namespace 
+      called default.
+
+      Inside root check it:
+        kubectl get namespace
+
+      Answer
+        NAME              STATUS   AGE
+        default           Active   39d
+        ingress-nginx     Active   39d
+        kube-node-lease   Active   39d
+        kube-public       Active   39d
+        kube-system       Active   39d
+
+      We have to know to what service, from inside ingress-nginx namespace, to comunicate with. 
+      Well, to figure out what that is, we need to list out all the services that exist inside that namespace.
+      We use, inside root:
+
+        kubectl get service -n ingress-nginx 
+
+      Answer:
+        NAME                                 TYPE           CLUSTER-IP       EXTERNAL-IP   PORT(S)                      AGE
+        ingress-nginx-controller             LoadBalancer   10.107.69.124    <pending>     80:32579/TCP,443:31516/TCP   39d
+        ingress-nginx-controller-admission   ClusterIP      10.107.136.221   <none>        443/TCP                      39d
+      
+      We have to comunicate the client with ingress-nginx-controller service with this url.
+        https://ingress-nginx.ingress-nginx-controller.svc.cluster.local
+        https://servicename.namespacename.svc.cluster.local
+
+    So there actually is a solution to this that will allow us to make a very similar looking request to this one:
+
+      https://ingress-nginx-srv
+
+    If we wanted to be able to make a request to something like this, we can create something that is called an external name 
+    service. So an external name service essentially just re maps the domain of a request.
+
+      
+    External Nameserver
+      If we want this long url:
+        https://ingress-nginx.ingress-nginx-controller.svc.cluster.local
+      
+      to be shorter like this:
+        https://ingress-nginx-srv
+
+      we have to use an external namerserver.
+
+    So we can remap the short domain to the complicated one.
+
+  
+  23.7. getInitialProps 
+    This static function getInitialProps is executed all the time on the server side, but we can see it executed on the 
+    client side only, but only when we navigate from a page to another, inside our application.
+
+    We can check that on register
+      https://ticketing.com/auth/signup
+    
+    eneter corect user details and after we click submit we are redirect to https://ticketing.com and in browser console we see 
+    the console.log that we put inside getInitialProps.
+
+      console.log("Server SIDE!!!");
+
+    So in this scenario, we see that getInitialProps was in fact executed on the browser. So in total what this is what I'm 
+    really saying here is that if we are making requests from inside of React component, we don't have to worry about this 
+    whole domain issue.
+
+    But if we are making a request from getInitialProps, we do have to worry about it.
+
+    So if we are ever making a request from, say, inside of a component or inside of a hook like, let'ssay useRequest, we don't 
+    have to worry about in this domain stuff, but any request that is originating from inside of a getInitialProps, that's where
+    we have to worry about this whole domain problem.
+
+    Inside ingress-srv.yaml file, inside of rules, we have:
+      host: ticketing.com
+    
+    So whenever a request comes into Ingress Nginx, ingress Nginx needs to know about the host that we are trying to reach.
+
+    Unfortunately, when we are making the request in this style, 
+      http://ingress-nginx-controller.ingress-nginx.svc.cluster.local/api/users/currentuser
+    
+    there's nothing inside of here to indicate what domain we are trying to access.
+
+    Ingress Nginx it's going to say, I don't know what domain you're trying to access.
+
+    To fix this we have to add this headers:
+
+      {
+        headers: {
+          // adding this Ingress-Nginx will know now the host
+          Host: "ticketing.dev",
+        },
+
+      as a second argument to axios.get() method.
+
+      // window obj exists only in the browser
+      // doesn't exist in nodejs
+      // so if window is undefined we are on server
+      if (typeof window === "undefined") {
+        const { data } = await axios
+          .get(
+            "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local/api/users/currentuser",
+            {
+              headers: {
+                // adding this Ingress-Nginx will know now the host
+                Host: "ticketing.dev",
+              },
+            }
+          )
+          .catch((err) => {
+            console.log(err.message);
+          });
+        return data;
+      } else {
+        // we are on the browser, so the browser will automatically prepend
+        // the https://ticketing.dev domain, for us
+        // if the user is not logged in we will get
+        //  "currentUser": null
+        // otherwise will get an object with all data
+        const { data } = await axios.get("/api/users/currentuser").catch((err) => {
+          console.log(err.message);
+        });
+        return data;
+      }
+
+
+
+      Set Cookie
+        Whenever getInitialProps gets called on the server, the first argument to the function is going to be an object that 
+        has a couple of properties inside of it. One of the properties on that thing is the request object. Will destruct that 
+        req object.
+
+          Home.getInitialProps = async ({req}) => {
+            console.log("first", req.headers);
+          }
+
+        This request right here is the same kind of request object that we expect to receive inside of expressjs application.
+        Then to take a look at all the headers on that incoming request, because remember, the cookie is passed as a header, 
+        we console.log the req.
+
+        Then refresh the https://ticketing.com/ browser.
+
+        We can see in req that we have the host
+          host: 'ticketing.com',
+        
+        and the cookie
+          cookie: 'express:sess=eyJqd3QiOiJleUpoYkdjaU9pSklVekkxTmlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKcFpDSTZJalkyTlRsa05EZGlaVEpoWVRsaU1EQXhPV1F4TTJZeU9DSXNJbVZ0WVdsc0lqb2laSE5oWkdGelFHUnpZV1J6WVM1allXRnpJaXdpYVdGMElqb3hOekUzTVRZek1UTXhmUS53aFJFaWdlUWs3RnNDMWM1S0htSGxFMS1NQ0tybTFPNjI0YUNjNnRHV3ZFIn0='
+
+        Take all the headers on that incoming request and pass it through to the request that we're sending off to Ingress-Nginx. This would 
+        essentially cause this request right here to act as a proxy of sorts.
+
+          const { data } = await axios
+            .get(
+              "http://ingress-nginx-controller.ingress-nginx.svc.cluster.local/api/users/currentuser",
+              {
+                headers: req.headers,
+              }
+            )
+            .catch((err) => {
+              console.log(err.message);
+            });
+
+        Then refresh the https://ticketing.com/ browser to test it.
+
+        Now in browser console we will see the current:
+          currentUser {id: '61cb89d2a24c70c140ebc68c', email: 'dsad@dsa.dsa', iat: 1640729042}
+
+        and in the BE terminal as well:
+          currentUser {
+            id: '61cb89d2a24c70c140ebc68c',
+            email: 'dsad@dsa.dsa',
+          }
+
+  23.8. Axios Configuration - Reusable API Client 
+    Create inside client the folder api.
+
+    Create a separate file and inside there we're going to write out a helper function called build-client.js. This build client 
+    function is going to take some incoming request that has thosenheaders on it that we really care about. 
+    
+    Then inside that function, we're going to have some logic to try to build a pre configured version of Axios that's going 
+    to be reconfigured to work regardless of what environment we are on.
+    
+    So the logic inside there is going to take a look at that incoming request. It's going to take a look at whether it is in 
+    the browser or the server environment, and then it will eventually return a version of Axios that has already been configured 
+    to work in either the browser or the server for us.
+
+  23.9. Login page 
+    Copy the register page, from pages/auth and change only from Register to Login.
+
+
+  23.10. Moving getInitialProps inside _app, too
+    Inside every page we have context
+      context === {req, res}
+    
+    but inside _app we get the context
+      context === {Component, ctx: {req, res}, router}
+
+    where ctx is shortcut for context.
+
+    If we have getInitialProps inside _app.js we can't have it inside any other component from pages, because will not work.
+
+    So we move getInitialProps from index.js:
+
+      LandingPage.getInitialProps = async (context) => {}
+
+    inside _app file:
+
+      AppComponent.getInitialProps = async (appContext) => {
+        const client = buildClient(appContext.ctx);
+        const { data } = await client.get("/api/users/currentuser");
+
+        return data;
+      };
+
+    So unfortunately, when we tie getInitialProps to _app component, the getInitialProps functions that we tie to an individual 
+    page do not get automatically invoked anymore.
+
+
+
+  23.11. Components 
+    Inside client create components folder and inside add header.js file. Will receive currentUser, that comes from _app.js file.
+
+      import Link from "next/link";
+      export default ({ currentUser }) => {
+        const links = [
+          !currentUser && { label: "Sign Up", href: "/auth/signup" },
+          !currentUser && { label: "Sign In", href: "/auth/signin" },
+          currentUser && { label: "Sign Out", href: "/auth/signout" },
+        ]
+          .filter((linkConfig) => linkConfig)
+          .map(({ label, href }) => {
+            return (
+              <li key={href} className="nav-item">
+                <Link className="nav-link" href={href}>
+                  {label}
+                </Link>
+              </li>
+            );
+          });
+
+        return (
+          <nav className="navbar navbar-light bg-light">
+            <Link className="navbar-brand" href="/">
+              GitTix
+            </Link>
+
+            <div className="d-flex justify-content-end">
+              <ul className="nav d-flex align-items-center">{links}</ul>
+            </div>
+          </nav>
+        );
+      };
+
+
+24. Tickets Service
+    First we have to move some login from custom error system, auth middleware and request validation middleware.
+
+  24.1. NPM Organization
+    We will make an npm package with all the code from the above sentece. Will be a public one, because is free. If we want a 
+    private one we have to pay.
+
+    Go to npmjs.com and login, then from the profile select to create an organization. Create a public one.
+
+    Create in the root the common folder, where we put all the login how to access between different services.
+    Inside common folder:
+      npm init -y
+
+    Inside package.json change the name, where sorin21us is organization and common is the package:
+      "name": "@sorin21us/common",
+
+    where common is the package name.
+
+    To publish a package we have to commit our code.
+    Create a git repository inside common folder.
+      git init
+
+      git add .
+      git commit -m "Initial commit"
+
+    After creating the npm account, I could not able to push the package to npm using "npm publish --access public". 
+    I had to login to npm using "npm login", enter my npm credentials before running the publish.
+
+      npm login
+
+    Publish this package to our organization
+      npm publish --access public
+
+    If we don't add --access public, npm will think that we want to add this as a private package.
+
+    Adding TS to common 
+      tsc --init
+
+    Install TS 
+      npm i typescript del-cli --save-dev
+
+      Anytime we make a change to the project we want to remove everything from build folder before we rebuild it.
+      That is why we installed del-cli tool.
+
+    Add commads inside package.json 
+      "build": "tsc"
+
+      This will run the TS compiler and will set the compiler to find index.ts and compile it into js file.
+
+    Add configuration inside tsconfig.json from common
+      Uncomment the following lines:
+         "declaration": true,
+
+          This will make sure that after we make the js file we still the ts definition file, that will allow TS to figure out 
+          what is going on inside the common folder.
+
+          "outDir": "./"
+
+          change the path
+          "outDir": "./build"
+
+    Execute the file 
+      npm run build
+
+    Use del-cli tool
+      Inside package.json add to delete the build folder
+        "clean": "del ./build/*"
+      
+      In Windows since $ del is already a builtin command on Windows, you need to use $ del-cli there.
+        "clean": "del-cli ./build/*"
+
+    Update the build method to clean before we build
+      "build": "npm run clean && tsc"
+
+    Change "main" from
+      "main": "index.js"
+
+    to
+      "main": "./build/index.js" 
+
+    Adding "types"
+      Used by TS, that tells to TS what the main type definition file, inside of our project is: build/index.d.ts
+
+      "types": "./build/index.d.ts"
+
+    Adding "files"
+      This will tell npm what set of files inside of our project gets included inside the final publish of our package.
+      We want to make sure that we publish everything that is inside of the build folder.
+
+        "files": [
+          "build/**/*"
+        ]
+
+    Add .gitignore
+      node_modules
+      build
+
+    Increment the package.json version by 0.1, so we run this command inside common folder, to do this automatically:
+      npm version patch 
+
+      We have to do this everytime we make a change to our package.
+
+    Build the package 
+      npm run build
+
+    Publish the package 
+      npm publish
+
+    Automate the process 
+      To not run all the time la last above commands we can do automate process. Not recommanded in a real project, only for 
+      inside of this course. Add inside package.json, for scripts this command:
+
+        "pub": "git add . && git commit -m \"Automated Updates\" && npm version patch && npm run build && npm publish"
+
+      Now we can make a change inside src/index.ts and publish the package:
+        npm run pub
+
+    
+  24.2. Move errors and middleware folder 
+    From auth/src to common/src. 
+    
+    Import every file, from errros and middlewares folder, inside index.js, from commom, and export it in the same time, 
+    in the same index.js file.
+
+    Run the TS project inside common, to build the project:
+      tsc 
+
+    We have to install all dependencies in common folder, to not get errors, after running the tsc command.
+      npm i express express-validator cookie-session jsonwebtoken @types/cookie-session @types/express @types/jsonwebtoken
+
+    We run again:
+      tsc
+
+    Now we can publish the app
+      npm run pub
+
+    Install common in auth
+      Open a terminal inside auth folder and run:
+        npm i @sorin21us/common
+        npm i @sorin21us/-dscommon
+
+      Now we can update each file, from auth folder, with the right path to the common package.
+      For example in routes/current-user.ts we chage from 
+        import { currentUser } from "../middleware/current-user";
+
+      to 
+        import { currentUser } from "@sorin21us/common"
+        import { currentUser } from "@sorin21us/-dscommon"
+
+
+    Update common module 
+      If we make any update of the code, from any file, from the common folder, so we want to use this updated to be reflected 
+      inside any service, where we use common package. So, for auth service, we open a termina inside auth folder and run:
+
+        npm update @sorin21us/-dscommon
+
+    Check if the container runs the correct version of that dependecy.
+      Inside auth run:
+        kubectl get pods
+
+      Answer:
+        NAME                                                        READY   STATUS    RESTARTS   AGE
+        auth-depl-5f5c485648-6hdcc                                  1/1     Running   0          14m
+        auth-mongo-depl-599db6fb9c-jkkwf                            1/1     Running   0          14m
+        client-depl-d79ddbcb5-28rd2                                 1/1     Running   0          14m
+        nginx-ingress-1637312296-controller-7cb4c59c88-q5pdv        1/1     Running   20         44d
+        nginx-ingress-1637312296-default-backend-6f886d5fdf-b48pm   1/1     Running   19         44d
+
+      Take the pod that is running the auth service and start a shell inside of that pod, to look at the files inside of that 
+      container, to make sure that is running the latest version of our project.
+
+      Still inside auth folder:
+        kubectl exec -it auth-depl-5f5c485648-6hdcc sh
+
+      This is new command, the above will be deprecated:
+        kubectl exec -it auth-depl-5f5c485648-6hdcc -- sh
+
+        ls
+
+      Open the common module, from node_modules and find the package.json from this common package.
+        cd node_modules
+
+        cd @sorin21us
+
+        ls
+
+        cd -dscommon
+
+        ls 
+
+        // show all information from this file
+        cat package.json
+
+      We can see that we have in package.json the correct dscommon version:
+
+         "@sorin21us/-dscommon": "^1.0.7",
+
+25. Tickets Service
+    All routes available for this service:
+      Route             Method    Body                                    Goal 
+      /api/tickets      GET         -                                     Retrieve all tickets
+      /api/tickets:id   GET         -                                     Retrieve ticket with specific ID
+      /api/tickets      POST     {title: string, price: string}           Create a ticket
+      /api/tickets      PUT      {title: string, price: string}           Update a ticket
+
+    Steps to build this service:
+      Create package.json and install dependencies
+      Write DockerFile
+      Create index.ts to run project
+      Build image and push to Docker Hub
+      Write k8s for deployment and service
+      Update skaffold.yaml to do file sync for tickets 
+      Write k8s for MongoDB deployment and service
+
+    Project Setup 
+      Inside root create a folder called tickets.
+      To save time, copy from auth folder the files: package.json, DockerFile, .dockerignore.
+      Create a src folder and inside copy, from auth, index.ts, app.ts, test folder.
+      From all the copied files, change from auth to tickets and then install dependencies:
+        npm i
+
+    Build image
+      docker build -t kiddodragon/tickets .
+
+    We build the image first time, and we don't wait to do it with skaffold, because when we run skaffold,  skaffold will 
+    try to reach to Docker Hub to get the initial copy of this image. So skaffold assumes that you already built this image in 
+    the past.
+    If we running project, with docker and kubernetes, on Google Cloud we don't have to run this docker build commad.
+
+    Push the image to Docker Hub
+      docker push kiddodragon/tickets
+
+    Write k8s deployment and service
+      Create tickets-depl.yaml file.
+
+       
+    Update skaffold.yaml to do file sync for tickets 
+      Add new artifact for tickets
+
+    Write k8s for MongoDB deployment and service
+      tickets-mongo-depl.yaml
+
+    Generate a TS configuration file 
+      tsc --init
+
+    Check that all pods are finished
+      kubectl get pods
+    
+    Then inside root folder run:
+
+      skaffold dev
+
+      If there are still pods running we have to wait 
+
+    For any error build again the image, inside tickets folder
+      docker build -t kiddodragon/tickets .
+      docker push kiddodragon/tickets
+
+    Then inside root folder restart skaffold:
+
+      skaffold dev
+
+
+
+  25.1. MongoDB Connention URI 
+      Inside tickets-depl.yaml file add a new env:
+
+        - name: MONGO_URI
+          # /thickets is the database name
+          value: "mongodb://tickets-mongo-srv:27017/tickets"
+
+      We don't want to be affrait to add this value, for security purpose, because don't have any authentication to mongo schema. 
+      If we had that authentication then will have to move this constant inside secretKeyRef.
+
+      Change inside index.ts, from tickets folder:
+        await mongoose.connect("mongodb://auth-mongo-srv:27017/auth");
+
+      with:
+        await mongoose.connect(process.env.MONGO_URI);
+
+      Do the same for auth folder.
+
+      To test that is working correctly we can go inside tickets-depl.yaml and comment these lines:
+        - name: MONGO_URI
+          value: "mongodb://tickets-mongo-srv:27017/tickets"
+
+      Commenting these above 2 lines should show an error inside skaffold terminal:
+
+        Error: MONGO_URI must be defined
+
+      In this way we know that our code works correctly.
+
+      We do the same modifications for the auth.
+
+
+  25.2. Tickets Tests
+      Inside tickets, create routes folder and inside create __test__ folder. Inside create new.test.ts file.
+
+      Run tests inside tickets
+        npm run test
+
+      Inside tickets/src/app.ts import the route 
+        import { createTicketRoute } from "./routes/new";
+      
+      and use it:
+        app.use(createTicketRoute);
+
+      Second test:
+          it("can only be accessed if the user is logged in", async () => {}
+
+          we have inside common the current-user.ts middleware, where we check if we don't have a token 
+            if (!req.session?.jwt) {
+              return next();
+            }
+
+          but if the token exists, decode the token and set to currentUser property.
+
+            const payload = jwt.verify(
+              req.session?.jwt,
+              process.env.JWT_KEY!
+            ) as UserPayload;
+            req.currentUser = payload;
+
+          The other middleware require-auth.ts will look at the currentUser property and if is not defined will throw an error:
+            if (!req.currentUser) {
+              // 401 forbidden
+              // return res.status(401).send();
+              throw new NotAuthorizedError();
+            }
+
+          To implement a good protection will use both  current-user.ts and require-auth.ts middlewares inside app.ts file. Will use to app so every incoming request will go through that protection to see if the user is or not authenticated.
+          Only some routes will have this protection, because, for ex, to list tickets, we don't need authentication.
+
+          Then inside new.ts route add:
+            import {requireAuth} from '@sorin21us/common'
+
+          and applied as middleware inside route:
+            router.post("/api/tickets", requireAuth, (req: Request, res: Response) => {}
+
+          Now the second test will pass.
+
+      
+      Third test  
+          To make this test working we have to be authenticated, so we need a fake authentication. Will make a fake cookie 
+          and return it, from a function, and use it to login in the application. 
+
+          First register and user and in network tab click on currentuser request. Take from this the cookie:
+            Cookie:  express:sess=eyJqd3QiOiJleUpoYkdjaU9pSklVekkxTmlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKcFpDSTZJalkyTm1KbVlqWmpNak0yWmpWa01EQXhPVFZtT0daaE9TSXNJbVZ0WVdsc0lqb2laR0Z6UUdSellXUXVZMkVpTENKcFlYUWlPakUzTVRnek5USTNORGg5LjVUNEpybUJJWlBSNHQ4Yk5kWGZ3OVVnVjJjS1JrSXM0b2JubU53V0JOcGsifQ==
+
+          Then go on base64decode.org and paste the cookie here and press decode. The cookie data in encoded in base64.
+
+          Will get in the answer the a json object with jwt with its value:
+            {"jwt":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjYxZDI5ZmZlNDE1NTExMjFlMDAzOTY2NSIsImVtYWlsIjoidGVzdEB0ZXN0LmNvbSIsImlhdCI6MTY0MTE5NDAxNX0.oqrJSpe6jLoYL-mLrKPDPwbMQBP2gE8mlTSzZ0pZXTc"}
+
+          Now go inside tickets/test/setup.ts and modify this function that we copied from auth service, from this:
+            global.getAuthCookie = async () => {
+              const email = "test@test.com";
+              const password = "123456";
+
+              const registerResponse = await request(app)
+                .post("/api/users/register")
+                .send({ email, password })
+                .expect(201);
+              const cookie = registerResponse.get("Set-Cookie");
+              return cookie;
+            };
+
+            to this:
+
+            global.getAuthCookie = () => {
+              // in jwt token we have a payload with {id, email}
+              const payload = {
+                id: "423erwer3w24",
+                email: "test@test.com",
+              };
+
+              // create the jwt using sign() method
+              // add ! so TS will not complain that JWT_KEY is not defined
+              // but we defined it in beforeAll, above
+              const token = jwt.sign(payload, process.env.JWT_KEY!);
+
+              // build session object {jwt: MY_JWT}
+              const session = { jwt: token };
+
+              // turn that session into JSON
+              const sessionJSON = JSON.stringify(session);
+
+              // take JSON and encode it as base64
+              const base64 = Buffer.from(sessionJSON).toString("base64");
+
+              // return a string, that has the cookie with the encoded data
+              // supertest standard wants to return everything in an array
+              return [`session=${base64}`];
+            };
+
+      Fourth and Fifth Test 
+          Inside of common/middleware we have validate-request.ts middleware. If something about the incoming request was not 
+          valid we would throw an error of RequestValidationError.
+
+          Inside RequestValidationError we see that we return status code 400, with the error message, as well,  if something is 
+          wrong with the incoming request.
+          That is why in this fourt test will expect 400.
+            .expect(400)
+
+
+          For this we have to bring validation rules inside new.ts route using body from express-validator.
+
+            [
+              body("title").trim().not().isEmpty().withMessage("Title is required"),
+              body("price")
+                .isFloat({ gt: 0 })
+                .withMessage("Price must be greated then zero"),
+            ],
+
+          Doing this validation will not throw an error, instead will set an error on the incoming request. We have to inspect 
+          the request and respond to it. We have this login inside ValidateRequest middleware. So we have to bring ValidateRequest 
+          inside new.ts route.
+
+            import { requireAuth, validateRequest } from "@sorin21us/common";
+
+            and use it in request.
+
+      Sixth Test 
+          In this test we need to check if the inputs values were saved in database. We need to create the tickets model.
+
+
+  25.3. Ticket Model 
+      Inside src create models folder and inside ticket.ts model file.
+      This will have 3 intefaces, as well, like user model, from auth service.
+
+      Will use this ticket model inside of new.text.ts for the Sixth Test.
+        tickets = await Ticket.find({});
+
+      Now we have to use ticket model in the new.ts route.
+      After adding this new code inside new.ts route:
+        const { title, price } = req.body;
+
+        // create a new ticket
+        const ticket = Ticket.build({
+          // We have access to currentUser on the req object
+          // because we executed currentUser middleware in app.ts
+          // app.use(currentUser);
+          // We put ! because without TS will think that currentUser is undefined
+          // but we check currentUser before, above in requireAuth, where
+          // if currentUser is undefined will throw an errow
+          userId: req.currentUser!.id,
+          title,
+          price,
+        });
+
+        await ticket.save();
+
+        // send back the new ticket created
+        res.status(201).send(ticket);
+
+      the Sixth Test will pass.
+
+  25.4. Show Ticket By ID 
+      Will use the second route from tickets:
+        /api/tickets:id   GET     Retrieve ticket with specific ID
+
+      Create Test file 
+        Inside route/tests add show.test.ts file.
+
+      Create the route 
+        Inside routes add show.ts route file and then import it inside app.ts file.
+
+
+  25.5. Get All Tickets 
+      Route             Method    Body           Goal 
+      /api/tickets      GET         -            Retrieve all tickets
+      
+      Create Test file 
+        Inside route/tests add index.test.ts file.
+
+      Create the route 
+        Inside routes add index.ts route file and then import it inside app.ts file.
+
+  25.6. Update a Ticket By ID 
+      Route             Method    Body                               Goal 
+      /api/tickets      PUT      {title: string, price: string}      Update a ticket
+      
+      Create Test file 
+        Inside route/tests add update.test.ts file.
+
+      Create the route 
+        Inside routes add update.ts route file and then import it inside app.ts file.
+      
+      Create a ticket and update it with a different user
+        Will try to create a new ticket, but this ticket will have the user id that created the ticket, id that will extract from the cookie that we include.
+          it("returns a 401 if the does not own the ticket", async () => {
+            await request(app)
+              .post(`/api/tickets}`)
+              // make sure that user is authenticated using the fake cookie
+              .set("Cookie", global.getAuthCookie())
+              .send({ title: "dsadsa", price: 20 })
+              .expect(401);
+          });
+
+        
+        Inside setup.ts we have only one id for all tickets:
+          global.getAuthCookie = () => {
+            // in jwt token we have a payload with {id, email}
+            const payload = {
+              id: "423erwer3w24",
+              email: "test@test.com",
+            };
+          }
+
+        To make this work to have to randomly generate an id for getAuthCookie. So everytime when we call getAuthCookie will have a different id, so will be like a different user.
+        If we need to make the same request, or make 2 different requests, for same user, in a row, we can call getAuthCookie once, then save the reference cookie that was returned and then make many requests for that user you want and do the same.
+
+          global.getAuthCookie = () => {
+            const id = new mongoose.Types.ObjectId().toHexString();
+            // in jwt token we have a payload with {id, email}
+            const payload = {
+              id,
+              email: "test@test.com",
+            };
+          }
+
+        Then in the test we have that one request, to create a ticket, that is above
+          await request(app)
+              .post(`/api/tickets}`)
+
+        And we add second request, to edit the ticket, with a different user:
+          await request(app)
+            .put(`/api/tickets/${response.body.id}}`)
+            // calling getAuthCookie second time will have a new ramdomly generated id
+            // so that means will have a different user, than the one from the above request
+            .set("Cookie", global.getAuthCookie())
+            // update with new title and price
+            .send({ title: "4432rdsaa", price: 40 })
+            .expect(401);
+
+      
+      Test: returns a 400 if the provides an invalid title or price
+        This test will fail id we don't add validations inside update.ts route. 
+        So will add first add [here we put validation rules] and after we add validateRequest middleware.
+
+          [
+            body("title").trim().not().isEmpty().withMessage("Title is required"),
+            // the price has to have decimals and number is greated then zero, so we use isFloat,
+            body("price")
+              .isFloat({ gt: 0 })
+              .withMessage("Price must be greated then zero"),
+          ],
+          validateRequest
+
+        Adding this the test will work.
+
+      Test: "updates the ticket provided valid inputs
+        This test will fail in the beggining, even the test is correct. 
+        To work we have to update the ticket inside update.ts route.
+          // set() will update only in memory
+          ticket.set({ title: req.body.title, price: req.body.price });
+          // that is way we need to use save to save to mongodb
+          await ticket.save();
+
+
+  25.7. Manual Test with Postman
+      To do this we have to expose access to this ticket service. We didn't update Ingress Nginx configuration file to take 
+      requests to /tickets and forward them on to our ticket service.
+      
+      Will add /tickets inside ingress-stv.yaml 
+         - path: /api/tickets/?(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: tickets-srv
+                port:
+                  number: 3000
+
+      Register first
+        https://ticketing.dev/api/users/register
+
+      Login 
+        https://ticketing.dev/api/users/login
+      
+      Current User
+        https://ticketing.dev/api/users/currentuser
+
+      Create Ticket
+        https://ticketing.dev/api/tickets
+
+      Get Ticket By Id
+         https://ticketing.dev/api/tickets/61d5e275bb541728340d0296
+
+      Update Ticket By Id
+         https://ticketing.dev/api/tickets/61d5e275bb541728340d0296
+
+      Get All Tickets
+         https://ticketing.dev/api/tickets
+      
+      Logout 
+        https://ticketing.dev/api/users/logout
+
+
+
+26. Event Bus Implementation - NATS Streaming Server
+    NATS Streaming Server will share events across all different services inside our application.
+      https://docs.nats.io/legacy/stan/intro
+
+    The legacy docs for NATS can be found here:
+      https://nats-io.gitbook.io/legacy-nats-docs/nats-streaming-server-aka-stan/developing-with-stan
+
+    So we are not making use of NATS.
+    NATS is a very simple, basic implementation of event sharing and NATS Streaming Server is a more advanced and more full of 
+    feature implementation, built on top of NATS.
+
+    On Docker Hub 
+      hub.docker.com
+
+    search for nats and click on nats streaming
+      https://hub.docker.com/_/nats-streaming
+      
+
+    We want to look, on this page, for 
+      Commandline Options
+
+    NATS Streaming Deployment
+      Create nats-depl.yaml
+
+    Make sure that we run:
+      skaffold dev
+
+    Get pods from our Cluster, in a different terminal:
+      kubectl get pods
+      
+    We're not going to be using Express or Axios to share events around our application. Instead, we are going to use a client 
+    library that is specifically designed to work with NATS Streaming Server.
+
+    The client library that we're going to use is called node-nats-streaming.
+
+    NPM package 
+      https://www.npmjs.com/package/node-nats-streaming
+
+      To work with this library, we've got a very event based kind of arhitecture: emit events and receive events.
+
+      This is the code example from that npm page:
+        // create some objects
+        const sc = require('node-nats-streaming').connect('test-cluster', 'test')
+
+        // set event listener
+        // we use callback arhitecture () => {} so we are gonna
+        sc.on('connect', () => {
+          // Simple Publisher (all publishes are async in the node version of the client)
+          // emit event
+          sc.publish('foo', 'Hello node-nats-streaming!', (err, guid) => {
+            if (err) {
+              console.log('publish failed: ' + err)
+            } else {
+              console.log('published message with guid: ' + guid)
+            }
+          })
+        
+          // Subscriber can specify how many existing messages to get.
+          const opts = sc.subscriptionOptions().setStartWithLastReceived()
+          const subscription = sc.subscribe('foo', opts)
+          subscription.on('message', (msg) => {
+            console.log('Received a message [' + msg.getSequence() + '] ' + msg.getData())
+          })
+        
+          // After one second, unsubscribe, when that is done, close the connection
+          setTimeout(() => {
+            subscription.unsubscribe()
+            subscription.on('unsubscribed', () => {
+              sc.close()
+            })
+          }, 1000)
+        })
+        
+        sc.on('close', () => {
+          process.exit()
+        })
+
+      We use callback arhitecture () => {} so we are gonna use the callback structure, in this library, in order to use async await.
+
+      So will send events to NATS Streaming and NATS will send those events to different services. So will not use axios or 
+      express to listen events, but will use them for http requests.
+
+
+27. Subscribe Events
+    NATS streaming is going to require us to subscribe to specific channels, so a channel. Events are emitted to specific chanels.
+
+    A chanel, called also topic, is a type of events, or chanel of events, that will listen in different services.
+    On NATS streaming server will create a collection of different topics, so called also channels.
+
+    NATS streaming store all events in memory, by default. We can configure NATS streaming to store all events inside some flat 
+    file, stored on a hard drive, or in a database like MySql or Postgres. 
+    
+    An advantage to use database is if NATS streaming goes offline or has to be restarted lose everything from memory, but 
+    when come backs online can connect to database, if we save in database. 
+
+
+28. NATS Test project 
+    Create nats-test folder and inside
+      npm init -y 
+
+    Install a few dependencies
+      npm i node-nats-streaming ts-node-dev typescript @types/node
+
+      @types/node = typescript definition for nodejs
+
+    Create src folder and inside add publisher.ts and listener.ts files, that will listen for events and publish events.
+
+    So these are going to be essentially the two separate programs we're going to put together. One is going to be dedicated 
+    to listening for events:
+      listener.ts
+
+    And the other is going to be dedicated to publishing events:
+      publisher.ts
+
+    Inside package.json add:
+      "scripts": {
+        "publish": "ts-node-dev --rs --notify false src/publisher.ts",
+        "listener": "ts-node-dev --rs --notify false src/listener.ts"
+      },
+
+    rs = restart the ts-node-dev instance
+    
+    Add TS config file  
+      tsc --init
+
+    Run in a terminal for thickets folder:
+      skaffold dev
+
+    We can run a command at our terminal that tells our Kubernetes cluster to port forward a port off of a very specific pod 
+    inside of our cluster.
+    
+    Port forward
+      kubectl get pods
+
+    Get the nats-depl-5889c668bf-b74nd pod and run:
+      kubectl port-forward nats-depl-5889c668bf-b74nd 4222:4222
+
+    First 4222  = port of the local computer that we want to access with this pod nats-depl-5889c668bf-b74nd
+    Second 4222 = port of the pod that we want to access
+
+    We do this to make available this nats-test service outside the cluster, because now we are inside of a cluster.
+
+    After we run the above command we open a new terminal, still in this nats-test folder, and run:
+      npm run publish
+
+    Answer
+      Publisher connected to NATS
+
+    Now we get in terminal, the console that we wrote inside publisher.ts
+      client.on("connect", () => {
+        console.log("Publisher connected to NATS");
+      });
+      
+    This port forwarding command is good for any temporary little connection.
+
+
+29. NATS Publishing Events
+    Listener 
+      Inside we want to have a subject that we want to listen to. In our case will listen to ticket:created. 
+      
+      So will take ticket:created and will pass it to client. This will tell to client to tell to NATS server that anytime we 
+      want to receive a copy of that information.
+
+      Will receive that information in something called subscription. Subscription is what is going to listen for some information 
+      and tell us when some information is received.
+
+
+    Publisher 
+      Add inside new data, the information that we want to share. Will pretend that we share the ticket created information.
+
+      Then also going to come up with a "Subject". A subject is the name of the channel that we want to share this information with.
+      
+      In NATS we can only share strings or raw data, but we have an object that we want to share.
+
+      So our data is going to be essentially a ticket.
+
+        const data = {
+          id: "34234",
+          title: "Theatre in Germany",
+          price: 20,
+        };
+
+      Our subject or the name of the channel that we want to share this information with. We're going to give it a name that 
+      kind of describes the type of data that we're trying to share.
+
+      So in our case, we are trying to share some data related to the creation of a ticket.
+
+      The name of our channel will be ticket:created.
+
+      We're going to take this data and the subject and pass it in to the stan client. The stand client is then going to reach 
+      over to the NATS streaming server.
+
+      When it reaches over, it's going to say, Hey, we want to share some information, specifically this data over the channel 
+      or the subject name of ticket created. Then NATS streaming server is then going to add ticket:created to its overall list of channels.
+
+      It'll then take our data and broadcast it out of that channel to anyone who's listening.
+
+      The subscription is what's going to actually listen to the channel and eventually it receives some data.
+
+      So we can't share a plain object. Will use JSON.stringify to make a string.
+
+      The publish function is how we actually publish some data.
+
+        ticket:created = is subject name
+        the 3rd arg = is a callback function that will be invoked after we publish this data
+
+      After we add this code:  
+        client.publish("ticket:created", data, () => {
+          console.log("Event was published!");
+        });
+
+      we can see inside publish terminal:
+        Event was published!
+
+
+      In the NATS world, rather than referring to this data, that we send along, as a event, it is more commonly referred to as 
+      a message. 
+      But in this course will refer to is as an event, because this it is, an event.
+
+
+30. NATS Listening For Data
+    Inside listener.ts the code will be almost the same like in the publisher.ts file.
+
+      const stan = nats.connect("ticketing", "123", {
+        url: "http://localhost:4222",
+      });
+
+      // watch for the connect event
+      stan.on("connect", () => {
+        console.log("Listener connected to NATS");
+      });
+
+    Next inside nats-test open a new terminal and run:
+      npm run listen
+
+    In the NATS world, rather than referring to this data, that we send along, as a event, it is more commonly referred to as a 
+    message. 
+    But in this course will refer to is as an event, because this it is, an event.
+
+      stan.on("connect", () => {
+        console.log("Listener connected to NATS");
+
+        // 1st we create the subscription
+        const subscription = stan.subscribe("ticket:created");
+
+        // then we listen on the message event
+        subscription.on("message", (msg) => {
+          console.log("Message received!");
+        });
+      });
+
+    Inside publisher terminal if we run "rs" will restart the server and will send a new message to listener. So next if we look 
+    in the listener teminal will indeed get the event(message):
+      Listener connected to NATS
+      Message received!
+
+
+31. Accessing Event Data
+    Will import inside listener.ts the Message:
+      import nats, { Message } from "node-nats-streaming";
+
+    Message is an interface that's going to describe the type of msg.
+
+      subscription.on("message", (msg: Message) => {
+        console.log("Message received!");
+      });
+
+    If we CTRL + Click on Message will see the type definition file of what Message is.
+
+    A message is going to have a couple of different properties associated with it. All of these are different functions 
+    that you and I are going to call to access some information included in the message.
+
+    getSubject() is going to return the name of the channel that this message just came out of.
+
+      getSubject():string;
+
+    getSequence() is going to return the number of this event. All events start off at number one. In other words, the very 
+    first event that we emit on a channel will be assigned a sequence number of one.
+
+      getSequence():number;
+
+    getData() is going to return the actual data that's included inside the message or what we refer to as an event.
+
+      getData():String|Buffer;
+
+    Now the listener will look like this:
+
+      stan.on("connect", () => {
+        console.log("Listener connected to NATS");
+
+        // 1st we create the subscription
+        const subscription = stan.subscribe("ticket:created");
+
+        // then we listen on the message event
+        subscription.on("message", (msg: Message) => {
+          const data = msg.getData();
+
+          /* 
+            For us, it's just about always going to be a string.
+            We're just putting in this check right here to make TypeScript happy.
+          */
+          if (typeof data === "string") {
+            console.log(`Received event #${msg.getSequence()}, with data: ${data}`);
+          }
+        });
+      });
+
+    Now we can test it, so inside publisher terminal run "rs" then inside listener will get:
+
+      Listener connected to NATS
+      Received event #9, with data: {"id":"34234","title":"Theatre in Germany","price":20}
+      Received event #10, with data: {"id":"34234","title":"Theatre in Germany","price":20}
+
+
+32. Client ID Generation
+    If we open a new terminal and try to run:
+      npm run listener
+
+    will get an error:
+      [ERROR] 16:20:45 Error: Unhandled error. ('stan: clientID already registered')
+
+    When we created a second listener we have the same ID "123". NATS server never wants to see a duplicate client ID, and 
+    that's exactly what we just did.
+
+    We tried to connect with the same client ID, and so that's why we saw the error message.
+
+    So rather than having a hard coded 123, we will instead randomly generate a string and then provide it as the second 
+    argument to the connect call.
+
+    We are going to import randomBytes() from Crypto. You might recall using this function a little bit earlier in the course 
+    when we were doing that password salting.
+
+    So randomBytes() essentially just allows us to create a random string full of numbers and letters.
+
+      const stan = nats.connect("tickets", randomBytes(4).toString("hex"), {
+        url: "http://localhost:4222",
+      });
+
+    Now if we look in both listener terminals we can see that the error was gone, because they both have random client IDs.
+
+
+33. NATS Queue groups
+    Queue groups are something that are going to be created inside of a channel.
+    So at this point, we have a channel called "ticket:created" inside this channel.
+
+    We can have multiple groups associated with one channel. 
+
+    So let's imagine that List of Channels, we create a queue group called simply MyQueueGroup. We're then going to make sure 
+    that our Order service, every instance of the Order service, creates a subscription and joins that Queue group.
+
+    Now whenever we get an event coming into the "ticket:created" channel NATS streaming server is going to take a look at all 
+    the different Queue groups we have. Then going to more or less randomly select one of the members out of every one of these 
+    groups and send the event to only one of those Queue members.
+
+    In our nats-test project we create a Queue group, as a second argument to subscribe. Will put in the name of the Queue group 
+    that we want to join. So again, this can be any name.
+
+    So inside listener.js file add this "listenerQueueGroup":
+
+      const subscription = stan.subscribe("ticket:created", "listenerQueueGroup");
+
+    Maybe a better format for this would be to name the Queue group after the type of service that is joining it.
+
+      const subscription = stan.subscribe("ticket:created", "orders-service-queue-group");
+
+    Now if we go in publisher terminal and run "rs" will see that in listener terminals only one termina got the message(event)
+
+    Again, a queue group is created to make sure that multiple instances of the same service, like Orders, in our example, 
+    are not all going to receive the exact same event:
+      {
+        id: "123",
+        title: "concert",
+        price: "$20",
+      }
+
+    And this is going to make sure that we don't try to do double, triple or quadruple processing on the same incoming event.
+
+
+34. NATS Manual Ack Mode
+    Inside of listener.js file if we want to customize a subscription, we add all options chained, one after another:
+      const options = stan.subscriptionOptions().setDeliverAllAvailable();
+
+    After we create that options object, we will then provide it as the third argument to the subscribe call:
+      const options = stan.subscriptionOptions().setDeliverAllAvailable();
+      const subscription = stan.subscribe(
+        'ticket:created',
+        'orders-service-queue-group',
+        options
+      );
+
+    The default behavior is, if we end up with any kind of error inside of our subscription, when we receive that event, the 
+    event is essentially lost and we do not get some follow up opportunity to process it.
+
+    So we really need to make sure that every single time we receive an event, if we end up with any kind of error, we have 
+    to somehow figure out how we can reprocess this event or attempt to process it a second time.
+
+    We can do this by adding an option call setManualAckMode(true), set to true:
+      const options = stan.subscriptionOptions().setManualAckMode(true).setDeliverAllAvailable();
+
+    Ack = is short for acknowledgement mode to true.
+
+    By setting setManualAckMode to true the NATS streaming library is no longer going to automatically acknowledge or tell 
+    the NATS streaming library that we have received the event.
+
+    And instead it will be up to you and I to run some processing on that event, possibly save some information to the database, 
+    and then after that entire process is complete, only after will we then acknowledge the message and say, okay, everything 
+    has been processed successfully.
+
+    If we do not acknowledge the incoming event, then the NATS streaming server is going to wait some amount of time, I believe 
+    it's 30 seconds by default.
+
+    And then after 30 seconds of not getting an acknowledgement, it's going to automatically decide to take that event and send 
+    it on to some other member of that group.
+
+    So to fix this we have to call ack():
+      stan.on('connect', () => {
+        console.log('Listener connected to NATS');
+
+        const options = stan.subscriptionOptions().setManualAckMode(true);
+        const subscription = stan.subscribe(
+          'ticket:created',
+          'orders-service-queue-group',
+          options
+        );
+
+        subscription.on('message', (msg: Message) => {
+          const data = msg.getData();
+
+          if (typeof data === 'string') {
+            console.log(`Received event #${msg.getSequence()}, with data: ${data}`);
+          }
+
+          msg.ack();
+        });
+      });
+
+    So ack() is going to tell the node NATS streaming library to reach back out to the NATS streaming server and tell it Hey, 
+    we received the message and it has been processed.
+
+
+35. Client Health Checks
+
+    Start a second half window, in the 1st one we we ran:
+
+      kubectl port-forward nats-depl-76c88b9557-s79pq 4222:4222
+
+    and here run:
+      kubectl port-forward nats-depl-76c88b9557-s79pq 8222:8222
+
+    We can now open up our browser and navigate to a localhost:8222 and that should print out some monitoring information about 
+    our running NATS server.ska
+
+    So run in the browser:
+      localhost:8222/streaming
+
+    We can get more information if we click on Channels
+      http://localhost:8222/streaming/channelsz
+    
+    and we add subs=1:
+      http://localhost:8222/streaming/channelsz?subs=1
+
+    So I'll now see. Okay, we've got a channel with the name of 'ticket:created' and we can see that there are two subscriptions
+    for this channel.
+
+    So there are two subscriptions, one for each of the two cmder windows Listeners that we are currently running.
+
+    They are both members of the same CU group because they have the same queue group name. There's ack property, which is the 
+    number of seconds that net streaming server is going to wait after sending this thing a message for that client or this 
+    subscription to act or acknowledge the message.
+
+
+36. Graceful Client Shutdown
+    We're going to add in some code to detect any time that our listener or publisher programs are about to be closed down. 
+    
+    And as soon as we detect that they're about to be closed down, we're then going to intercept that and we're going to try to tell 
+    our stan client or our NATS client that it needs to send the server a shutdown request and tell it, hey, just so you know, 
+    I'm going offline, consider me offline.
+
+    Don't try to send me any more events. We add this inside of the listener.js file:
+
+      stan.on("close", () => {
+        console.log("NATS connection closed!");
+        process.exit();
+      });
+
+    Then down at the very bottom, the file we to add in two handlers to watch for any single time that someone tries to close 
+    down this process:
+
+      process.on("SIGINT", () => stan.close());
+      process.on("SIGTERM", () => stan.close());
+
+    So these are watching for interrupt signals or terminate signals. Any time that the node dev tries to restart our program 
+    or any time you hit control C at your terminal.
+
+    By calling 
+      stan.close(), 
+      
+    our client is going to reach out to the node net server and say: don't send me any more messages.
+
+
+37. Event Redelivery
+    So if we add in this option
+      setDeliverAllAvailable()
+
+    to our subscription to object then whenever our subscription gets created, NATS is going to try to send over all the 
+    events that we missed while or before the subscription was ever created or while it's been down.
+
+    So we add this inside listener.js file:
+
+      const options = stan.subscriptionOptions().setManualAckMode(true)setDeliverAllAvailable();
+
+    So clearly this is kind of handy for making sure that if a service ever goes down, we can somehow get a list of all the 
+    events that have been emitted in the past.
+
+      Listener connected to NATS
+      Message received: #11 - ticket:created / payments-service
+      Event data! { id: '123', title: 'concert', price: 20 }
+      123
+      concert
+      20
+      Message received: #12 - ticket:created / payments-service
+      Event data! { id: '123', title: 'concert', price: 20 }
+      123
+      concert
+      20
+
+    The only downside here is, well, every single time we start up a new listener, because maybe we are restarting our service 
+    or maybe we are scaling it up or whatever it is we are going to be, Redelivered our big list of events after we've been 
+    running our application for possibly weeks, months or years, there might be thousands or hundreds of thousands or even millions 
+    of different events saved up.
+
+    Instead, we're going to use this option along with one other option that's going to give us some more desirable behavior.
+
+
+38. Durable Subscriptions
+    A durable subscription is going to be created when we give an identifier to a subscription.
+
+      const options = stan
+        .subscriptionOptions()
+        .setManualAckMode(true)
+        .setDeliverAllAvailable()
+        .setDurableName("order-service");
+
+      When we call set durable name, we're going to put in a string that's going to serve as the name or the identifier for 
+      the subscription.
+
+      So even though we have 
+        setDeliverAllAvailable() 
+        
+      that will be ignored on any restart.
+
+      So this option 
+        setDeliverAllAvailable() 
+
+      is really just used for the very first time when we bring the 
+        setDurableName() 
+        
+      online.
+
+      So by adding in the queueGroupName, it's going to make sure that even if we very temporarily disconnect all clients or 
+      all subscriptions with this setDurableName(), it will not dump the entire durable subscription.
+
+        const subscription = this.client.subscribe(
+          this.subject,
+          this.queueGroupName,
+          this.subscriptionOptions()
+        );
+
+
+39. Reusable NATS Listeners
+    We're going to create a class called Listener.
+
+    So listener is just a blueprint. It is a guide on how to create a listener.
+
+    This is going to be an abstract class.
+
+    Remember, abstract classes are not meant to be used directly. Instead, we're going to subclass them in order to use them.
+    The entire goal of class is to essentially automate as much of all this stuff as possible.
+
+
+40. Extending the Listener
+    We create an abstract class 
+
+      TicketCreatedListener
+
+    So remember using these abstract classes things is really fantastic because TypeScript is going to help you implement 
+    parts of your code for you.
+
+
+41. Awaiting Event Publication
+    So to implement this, we're going to go back over to our base-publisher.ts file.
+
+    In order to use the async await syntax all we have to do is return a promise that we're going to create manually from 
+    this publish() function.
+
+    And inside that promise function, we're going to resolve, it ourselves whenever the callback function is invoked and reject 
+    it if the callback function is invoked with an error, if something goes wrong.
+
+    The first argument to this callback function is an error object. This will be null if no error occurred, or it will be 
+    some error if something went wrong.
+
+    If we don't have any error we will resolve the promise.
+
+    We aren't really resolving with anything for TS, so we're going to put on a custom annotation Promise<void>.
+
+      publish(data: T["data"]): Promise<void> {
+        return new Promise((resolve, reject) => {
+          this.client.publish(this.subject, JSON.stringify(data), (err) => {
+            if (err) {
+              return reject(err);
+            }
+            console.log("Event published to subject", this.subject);
+            resolve();
+          });
+        });
+      }
+
+    We'll go back over to our publisher.ts file. So this is where we created our publisher.
+
+    We should now be able to mark the enclosing function as async and then put a await on the publish statement and not get 
+    any error from it.
+
+      stan.on("connect", async () => {
+        console.log("Publisher connected to NATS");
+
+        // publish an event and pass the NATS client
+        const publisher = new TicketCreatedPublisher(stan);
+        try {
+          // publish this ticket
+          await publisher.publish({
+            id: "123",
+            title: "concert",
+            price: 20,
+          });
+        } catch (err) {
+          console.error(err);
+        }
+
+42. Updating the Common Module
+    Inside this Common directory, I'll find SRC inside there I'll make a new folder called Events.
+
+    Well, then find the events directory inside of nats-test, and we're going to pull out the base-listener.ts, base-publisher.ts,
+    subjects.ts and ticket-created-event.ts files.
+
+    So I'm going to copy all of these and will'll go up to the events directory, we just created inside common and paste those 
+    four files in.
+
+    Then we go to common folder, open a terminal and:
+      npm i node-nats-streaming
+
+    So we'll do:
+      npm run pub 
+      
+    that will do the commit the build the version, delete the build, do the publish all that stuff.
+
+    Now we go from commom folder to terminal to tickets folder:
+      cd..
+      cd tickets 
+      npm update @sorin21us/-dscommon
+
+
+42. Restarting NATS
+    So if we just restart the thing, all the events we've emitted so far get completely dumped and we won't have to worry 
+    about consuming those kind of non valid events, the one that we tried just for test the app.
+
+      kubectl get pods
+
+      kubectl delete pod nats-depl-9b5688989-ndb2b
+
+    That's going to delete the pod. The deployment is going to automatically detect that the pod has been deleted and start up 
+    a new version.
+
+    So if I do another get pods:
+      kubectl get pods
+
+    There's a brand new pod:
+      nats-depl-9b5688989-lv4pj
+
+    So because we restart the pod NATS was clearly restarted. We don't have any of the events that we have previously had emitted.
+
+    And so if we start to connect with some new service or something like that, we're not going to get a bunch of trash data 
+    along that subject or that channel of ticket:created.
+
+    Now, of course, moving forward in the course, at any point in time, if you are feeling like your NATS deployment has a ton 
+    of trash data inside of it, you just will repeat these same steps. You'll do a delete pod, then just verify that a new one 
+    was created by the deployment.
+
+
+43. Publishing Ticket Creation
+    We're going to start to focus on is making sure that whenever someone creates a new ticket by making a post request to our 
+    ticket service, from inside tickets/src/routes/new.ts file.
+
+    W're going to make sure that we create the ticket, save the ticket to the database:
+
+      await ticket.save();
+
+    And then right after that, we're going to want to publish an event telling every other service inside of our application 
+    that someone just created a new ticket.
+
+    So to do so, we are going to create a new custom publisher inside of our tickets service.
+
+    Create the events/publishers folder.
+
+44. Accessing the NATS Client
+    We can then access the client from any other file inside of our project, and we do not have to worry about any 
+    cyclical dependencies.
+
+    Inside nats-wrapper.ts we have the connect:
+      connect(clusterId: string, clientId: string, url: string) {
+        this._client = nats.connect(clusterId, clientId, { url });
+
+        return new Promise<void>((resolve, reject) => {
+          this.client.on("connect", () => {
+            console.log("Connected to NATS");
+            resolve();
+          });
+          this.client.on("error", (err) => {
+            reject(err);
+          });
+        });
+      }
+
+45. Graceful Shutdown
+    We will take from nats-test/src/listener.ts file these lines:
+
+      this._client.on("close", () => {
+        console.log("NATS connection closed!");
+        process.exit();
+      });
+
+      // So these are watching for interrupt signals or terminate signals.
+      process.on("SIGINT", () => this.client.close());
+      process.on("SIGTERM", () => this.client.close());
+
+    and we put them inside tickets/src/index.ts file.
+
+    So this is much better. So now inside of a very central location inside of our project, 
+      tickets/src/index.ts
+
+    we can see that there is a condition:
+      process.exit();
+
+    under which we're going to exit our entire program.
+
+    It would be really nice if we could somehow integrate this into our class, because right now this is some very repetitive 
+    logic right here that we're probably going to want to duplicate between our different services.
+
+    But again, it just would not be great to hide this way inside in some far away file.
+
+    We have to restart skaffold:
+
+      skaffold dev 
+
+    Now we're going to try to simulate NATS going down. So to do that we will delete the NATS pod entirely. 
+
+      kubectl get pods 
+
+    Get the NATS pod name and delete it:
+      kubectl delete pod nats-depl-ffbfdfc8c-t7z5g
+
+    If will go back now to the skaffold terminal will see:
+      [tickets] NATS connection closed!
+
+    Now if will check the pods list will see that we have a different pod name for NATS:
+      nats-depl-ffbfdfc8c-bs4xl
+
+    With this we confirm that the container inside the pod was restarted.
+
+
+46. Successful Listen!
+    We have to test again inside nats-test what will get:
+      kubectl get pods
+    then:
+      kubectl port-forward nats-depl-ffbfdfc8c-bs4xl 4222:4222
+
+    then still inside nats-test, in a different terminal:
+      npm run listen 
+
+    then inside Postman to check, to create a ticket we have to register first:
+      ticketing.com/api/users/signup
+
+    authenticate:
+      https://ticketing.com/api/users/signin
+
+    verify that you are loggedin:
+      https://ticketing.com/api/users/currentuser
+
+    create the ticket:
+      https://ticketing.com/api/tickets
+
+    then back in the listener terminal we can see the ticket that we just created:
+
+      Message received: #1 - ticket:created / payments-service
+      Event data! {
+        id: '66869a479161ec00193ae5d8',
+        title: 'Big Concert with Marky Mark',
+        price: 62,
+        userId: '668699894d28e20019ebce03'
+      }
+      66869a479161ec00193ae5d8
+      Big Concert with Marky Mark
+      62
+
+    Now, the very last thing we really have to do inside of our ticket service, we need to make sure that we also emit a very 
+    similar event anytime someone updates a ticket as well.
+
+
+47. Ticket Update Publishing
+    Inside tickets/src/evets/publisher create a new file ticket-updated-publisher.ts.
+
+      export class TicketUpdatedPublisher extends Publisher<TicketUpdatedEvent> {
+        readonly subject = Subjects.TicketUpdated;
+      }
+
+    Then inside the update.ts route will import this and add it with the natsWrapper as well:
+
+      new TicketUpdatedPublisher(natsWrapper.client).publish({
+        id: ticket.id,
+        title: ticket.title,
+        price: ticket.price,
+        userId: ticket.userId,
+      });
+    
+    Now we can test this update route inside Postman:
+      https://ticketing.com/api/tickets/66869a479161ec00193ae5d8
+
+    If we get all tickets will see that we have successfully updated our previous ticket:
+      https://ticketing.com/api/tickets
+
+    Inside the terminal where we have skaffold we can see:
+      Event published to subject ticket:updated
+
+
+48. Fixing a Few Tests
+    Will fake our code from nats-wrapper.ts so to do this will create a folder src/__mocks__ and here we create the file with 
+    the same name nats-wrapper.ts.
+
+    So inside of my test directory, we're going to first focus on getting the new.test.ts file working correctly.
+
+    Here will add in an import statement at the top of this new test file that's going to tell jest to make use of our mock file.
+
+      jest.mock("../../nats-wrapper.ts");
+
+    Inside nats-wrapper.ts we have:
+      {_client: Stan, client: Stan, connect: () => Promise}
+
+    From nats-wrapper.ts the new.ts route is interested about the client. This is the only property that our new ticket 
+    handler cares about.
+
+    And that means that this is the only property that we need to define inside of our little fake implementation.
+
+      export const natsWrapper = {
+        client: {
+          publish: (subject: string, data: string, callback: () => void) => {
+            callback();
+          },
+        },
+      };
+
+    This client is used inside events/ticker-created-publisher.ts file.
+
+    And so the TicketCreatedPublisher doesn't really do anything with the client directly. Instead, if we want to figure out 
+    how that client gets used, we need to go and take a little peek at our base Publisher class.
+
+    So let's go back over to our common module very quickly and take a look at what that Publisher really does with the client.
+
+    This base-publisher.ts internally the only thing it actually does with it is call the client.publish() function.
+
+      this.client.publish(this.subject, JSON.stringify(data), (err) => {
+        if (err) {
+          return reject(err);
+        }
+        console.log("Event published to subject", this.subject);
+        resolve();
+      });
+
+    When it calls the publish function, it's going to provide we're going to provide three arguments to it: the subject,
+    some stringified data and a callback function.
+
+    Then the expectation is that this callback function is going to eventually be invoked by the client.

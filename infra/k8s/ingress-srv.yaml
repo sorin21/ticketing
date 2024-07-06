@@ -1,0 +1,45 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-service
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  rules:
+    - host: ticketing.com
+      http:
+        paths:
+          # this paths will mach in order that we list
+          # So that means that any time someone makes a request to our cluster and the request has a path /api/users/
+          - path: /api/users/?(.*)
+            pathType: Prefix
+            # then we're going to send that request on to this listed backend
+            backend:
+              service:
+                # this name comes from auth-depl.yaml, from metadata: name: auth-srv
+                name: auth-srv
+                port:
+                  number: 3000
+          - path: /api/tickets/?(.*)
+            pathType: Prefix
+            # then we're going to send that request on to this listed backend
+            backend:
+              service:
+                # this name comes from tickets-depl.yaml, from metadata: name: tickets-srv
+                name: tickets-srv
+                port:
+                  number: 3000
+          # add a new path for the client service
+          # we had to add all other paths above this React path /, to not enter 1st time in straigt in this path
+          # because this client path is a catch all path: /?(.*)
+          - path: /?(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: client-srv
+                port:
+                  number: 3000
+            
+
+

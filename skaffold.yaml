@@ -1,0 +1,52 @@
+apiVersion: skaffold/v4beta10
+kind: Config
+# deploy:
+#   kubectl:
+#     manifests:
+#       - ./infra/k8s/*
+manifests:
+  rawYaml:
+    - ./infra/k8s/*
+build:
+  local:
+    push: false
+  # artifacts make code synching
+  # when we make a change inside js files, in auth, client those changes
+  # will get synched into the pod that is runnig our auth image
+  artifacts:
+    # So we're going to list out the image that's going to be produced by that auth project.
+    - image: kiddodragon/auth
+      # The context or the folder that contains all the code for this image is auth
+      context: auth
+      docker:
+        # I'm going to specify the Docker file to use.
+        dockerfile: Dockerfile
+      # we'll set up the sink section, which is going to tell Scaffold how to handle any files that change in our project
+      sync:
+        # We'll say that we're going to give it some manual configuration and be very explicit about what to do
+        # when some files inside of project change.
+        manual:
+          # so this is going to be the set of files that scaffold needs to watch.
+          # tell to skaffold to watch all the files that ends with .ts
+          - src: "src/**/*.ts"
+          # The dot means basically just take wherever the file was found from and throw it to the corresponding
+          # path inside the container.
+            dest: .
+    - image: kiddodragon/client
+      context: client
+      docker:
+        dockerfile: Dockerfile
+      sync:
+        manual:
+          # in client we don't have src to watch
+          - src: "**/*.js"
+            dest: .
+    - image: kiddodragon/tickets
+      context: tickets
+      docker:
+        dockerfile: Dockerfile
+      sync:
+        manual:
+          # we want to sync everything that is this src folder
+          - src: "src/**/*.ts"
+            dest: .

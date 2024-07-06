@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tickets-depl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tickets
+  template:
+    metadata:
+      labels:
+        app: tickets
+    spec:
+      containers:
+        - name: tickets
+          image: kiddodragon/tickets
+          env:
+            - name: MONGO_URI
+            # tickets-mongo-srv comes from tickets-mongo-depl.yaml file
+            # tickets is the name of database that we try to create
+              value: 'mongodb://tickets-mongo-srv:27017/tickets'
+            # name of Env Variable, for this auth container
+            - name: JWT_KEY
+              # tell Kubernetes that we want the value secret that we just create with imperative command
+              valueFrom:
+                # secret key reference
+                # ticket service it's going to try to handle authentication by itself.
+                # ticket service is going to need to decide whether or not a request includes a valid JSON web token.
+                # And we can only validate a token if we have the original key that we created the token with.
+                # So our ticket service definitely needs the JSON web token key.
+                secretKeyRef:
+                  # name of the secret
+                  name: jtw-secret
+                  key: JWT_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tickets-srv
+spec:
+  selector:
+    app: tickets
+  ports:
+    - name: tickets
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
