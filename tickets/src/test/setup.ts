@@ -17,6 +17,8 @@ declare global {
   }
 }
 
+jest.mock("../nats-wrapper.ts");
+
 let mongo: any;
 // So to create an instance of MongoMemoryServer, before all of our tests set up, we're going to define a hook function.
 beforeAll(async () => {

@@ -4145,3 +4145,9 @@
     some stringified data and a callback function.
 
     Then the expectation is that this callback function is going to eventually be invoked by the client.
+
+    Add now the mock import inside test/setup.ts file:
+
+      jest.mock("../nats-wrapper.ts");
+
+    so to be available in all the tests.
