@@ -22,6 +22,7 @@ jest.mock("../nats-wrapper.ts");
 let mongo: any;
 // So to create an instance of MongoMemoryServer, before all of our tests set up, we're going to define a hook function.
 beforeAll(async () => {
+  jest.clearAllMocks();
   process.env.JWT_KEY = "dsadfgfdgfdgdf";
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
